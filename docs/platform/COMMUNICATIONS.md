@@ -326,16 +326,65 @@ answered ─▶ disclosure ─▶ "May we record?"  (carrier <Gather>: key 1/2 o
   `pause-recording` / `resume-recording` actions on
   `POST /communications/calls/<id>/decide`. All are audited.
 
+## Phase 4a: from calls to company data
+
+```yaml
+communications:
+  extraction: { llm_base_url: https://api.openai.com/v1, llm_model: gpt-4.1-mini }  # key: EXTRACTION_LLM_API_KEY
+  purposes:
+    - id: sales-follow-up
+      fields:
+        - { name: budget,   kind: number, contact_attribute: budget, auto_apply: 0.85 }
+        - { name: interest, kind: choice, options: [high, medium, low], contact_attribute: interest }
+        - { name: callback, kind: date,   description: "when they asked to be called back" }
+  agents:
+    - agent: sales
+      keep_transcript_days: 0      # default: deleted as soon as fields are extracted
+```
+
+For every finished call with a transcript, from the sweep:
+
+1. **Transcripts** come from both engines, one finished turn at a time, redacted before
+   they are written. Digit runs and SSN-shaped numbers become `[number]`.
+2. **Spoken opt-outs are honoured without a model.** A caller turn asking not to be called
+   suppresses the contact for every agent. The cascaded engine already does this live;
+   this catches GPT-Live calls too.
+3. **Extraction.** The tenant's model reads the transcript as data, never as instructions,
+   and returns value, confidence and quote per field.
+4. **Verification.** Each value is coerced to its field's type (a choice must be one of its
+   options, a date must be a date), and its **quote must appear in the transcript**. A quote
+   that is not there scores zero: a model may misread a call, but it may not invent the
+   evidence for its reading.
+5. **Writeback.** A value mapped to a `contact_attribute` is written when its confidence
+   reaches `auto_apply`, **unless a person entered the current value**: a call never
+   overwrites a person. Everything else goes to the review queue with its quote. An
+   approved value becomes a person's value.
+6. **The transcript is deleted**, or kept for `keep_transcript_days` and then deleted.
+
+Every written value carries the call id and the quote it came from. A model failure is
+recorded once and not retried in a loop. Fields declared without a configured model leave
+the transcript waiting rather than lose it.
+
+| Surface | |
+|---|---|
+| `nova calls review BUNDLE` / `decide-review BUNDLE ID approve\|reject` | the queue |
+| `nova calls contact BUNDLE CONTACT` | fields with where each value came from |
+| `nova calls set-attribute BUNDLE CONTACT NAME VALUE` | a person's value; calls only propose changes to it |
+| `GET /communications/reviews`, `POST /communications/reviews/<id>/decide` | admin |
+| `GET /communications/contacts/<id>` | admin: groups, consent, suppression, fields with provenance |
+| `GET /communications/calls/<id>` | now includes the extraction |
+
 ## Not built yet, in the order it lands
 
 1. **Next:** a first live call on a test number.
 2. **Legal sign-off of the consent rule per launch market**, then switching recording on
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
-3. **Phase 4:** the agent-facing `communications` toolset (request a call, read its status),
-   added per session from the calling profile, never through an environment variable;
-   transcripts, extraction and post-call actions.
-4. **Phase 5:** Bedrock Nova Sonic, ElevenLabs Agents if the benchmark justifies it, mid-call
+3. **Phase 4a, part 2:** the agent-facing calling tool (request a call, read its status),
+   installed only for agents with a calling profile.
+4. **Phase 4b:** post-call actions (callbacks, follow-up email, tasks, escalation) with
+   auto/approve/never tiers; an email provider; agent-to-agent delegation; unified history.
+5. **Phase 5:** Bedrock Nova Sonic, ElevenLabs Agents if the benchmark justifies it, mid-call
    failover.
 
 A dashboard screen for the call monitor needs the dashboard's source, which is not here.

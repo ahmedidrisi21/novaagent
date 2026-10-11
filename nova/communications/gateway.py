@@ -97,6 +97,7 @@ class CallGateway:
         voices: Optional[Mapping[str, VoiceEngine]] = None,
         call_secret: bytes = b"",
         answers: Optional[Callable[[CallRecord], Optional[Answerer]]] = None,
+        extractor=None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         if audit.tenant_id != store.tenant_id:
@@ -112,6 +113,8 @@ class CallGateway:
         #: Builds the read-only answerer for a call, or None when the agent has no
         #: knowledge to consult. Absent means calls run on their instructions alone.
         self._answers = answers
+        #: Reads finished calls into their purpose's fields. None: transcripts wait.
+        self.extractor = extractor
         self._clock = clock
 
     def call_token(self, call_id: str) -> str:
@@ -478,6 +481,17 @@ class CallGateway:
             delegation=delegation,
         )
 
+    def transcriber(self, record: CallRecord) -> Callable[[str, str], None]:
+        """Writes a call's finished turns, redacted, for extraction after the call."""
+        from nova.communications.extraction import redact
+
+        def said(speaker: str, text: str) -> None:
+            cleaned = redact(text).strip()
+            if cleaned:
+                self.store.append_turn(record.call_id, speaker, cleaned, at=_iso(self._clock()))
+
+        return said
+
     def _answerer(self, record: CallRecord) -> Optional[Answerer]:
         return self._answers(record) if self._answers is not None else None
 
@@ -537,9 +551,9 @@ class CallGateway:
 
         self.store.advance(call_id, CallStatus.SESSION_CONNECTED, at=_iso(self._clock()))
         self.store.mark_applied(engine_id, incoming.event_id)
-        heard = guard_for(self, record)
-        if answer is not None or heard is not None:
-            voice.attach(incoming.session_id, CallHooks(answer=answer, heard=heard))
+        # Always attached: the transcript is how a spoken opt-out is caught after the call.
+        voice.attach(incoming.session_id, CallHooks(answer=answer, heard=guard_for(self, record),
+                                                    said=self.transcriber(record)))
         self.audit.record("communications.call.session_connected", correlation_id=correlation,
                           subject=call_id,
                           detail={"voice_engine": engine_id, "knowledge": answer is not None})
@@ -576,6 +590,7 @@ class CallGateway:
             ),
             end_call=lambda: self._end_quietly(self.store.call(call_id)),
             heard=guard_for(self, record),
+            said=self.transcriber(record),
         )
         self.audit.record("communications.call.session_connected", correlation_id=correlation,
                           subject=call_id,

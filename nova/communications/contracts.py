@@ -381,6 +381,9 @@ class CallHooks:
     #: ``caller`` or ``agent`` — partial results included. Feeds the payment guard, which
     #: pauses a recording before card details are captured. Never stored.
     heard: Optional[Callable[[str, str], None]] = None
+    #: Each finished turn, ``(speaker, text)``, for the call's transcript. The gateway
+    #: redacts before anything is written.
+    said: Optional[Callable[[str, str], None]] = None
 
 
 class StreamVoiceEngine(VoiceEngine):

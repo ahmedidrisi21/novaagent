@@ -73,6 +73,24 @@ def register(sub) -> None:
         parser = command(name, helptext, call=True)
         parser.add_argument("--actor", default="")
 
+    review = command("review", "values from calls waiting for a person to decide")
+    review.add_argument("--json", action="store_true")
+
+    decide = command("decide-review", "approve or reject one queued value")
+    decide.add_argument("review_id")
+    decide.add_argument("decision", choices=["approve", "reject"])
+    decide.add_argument("--actor", default="")
+
+    contact = command("contact", "a contact's fields, and where each value came from")
+    contact.add_argument("contact_id")
+    contact.add_argument("--json", action="store_true")
+
+    attribute = command("set-attribute", "set a contact field as a person; calls never overwrite it")
+    attribute.add_argument("contact_id")
+    attribute.add_argument("name")
+    attribute.add_argument("value")
+    attribute.add_argument("--actor", default="")
+
     forget = command("forget-recordings", "delete every recording of one contact, now")
     forget.add_argument("contact_id")
     forget.add_argument("--actor", default="")
@@ -233,6 +251,53 @@ def _forget(args, bundle, gateway, public_url) -> int:
     return 0
 
 
+def _review(args, bundle, gateway, public_url) -> int:
+    pending = gateway.store.reviews()
+    if args.json:
+        print(json.dumps(pending, indent=2))
+        return 0
+    for item in pending:
+        current = f" (now {item['current_value']!r})" if item["current_value"] else ""
+        print(f"  {item['review_id']}  {item['contact_id']}.{item['name']} = {item['value']!r}"
+              f"{current}  [{item['confidence']:.2f}] {item['reason']}")
+        if item["quote"]:
+            print(f'      "{item["quote"]}"  (call {item["call_id"]})')
+    if not pending:
+        print("nothing waiting for review")
+    return 0
+
+
+def _decide_review(args, bundle, gateway, public_url) -> int:
+    from nova.communications.extraction import decide_review
+
+    result = decide_review(gateway, args.review_id, approve=args.decision == "approve",
+                           actor=_actor(args))
+    print(f"{args.review_id}: {result['status']}")
+    return 0
+
+
+def _contact(args, bundle, gateway, public_url) -> int:
+    values = gateway.store.attributes(args.contact_id)
+    if args.json:
+        print(json.dumps(values, indent=2))
+        return 0
+    for name, item in values.items():
+        origin = f"call {item['call_id']}" if item["source"] == "call" else item["source"]
+        print(f"  {name:24} {item['value']!r}  ({origin})")
+    if not values:
+        print("no fields recorded")
+    return 0
+
+
+def _set_attribute(args, bundle, gateway, public_url) -> int:
+    gateway.store.set_attribute(args.contact_id, args.name, args.value, source="person",
+                                at=_stamp(gateway))
+    gateway.audit.record("communications.contact.attribute_set", correlation_id=new_correlation_id(),
+                         subject=args.contact_id, detail={"name": args.name, "actor": _actor(args)})
+    print(f"{args.contact_id}.{args.name} set; calls will propose changes to it, not make them")
+    return 0
+
+
 def run(args, runtime_factory) -> int:
     """Dispatch ``nova calls``. ``runtime_factory(tenant_id)`` returns the runtime."""
     bundle, gateway, public_url = _open(args, runtime_factory)
@@ -290,4 +355,8 @@ _COMMANDS = {
     "pause-recording": _pause,
     "resume-recording": _pause,
     "forget-recordings": _forget,
+    "review": _review,
+    "decide-review": _decide_review,
+    "contact": _contact,
+    "set-attribute": _set_attribute,
 }

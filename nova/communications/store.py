@@ -97,6 +97,57 @@ CREATE TABLE IF NOT EXISTS call_recordings (
     PRIMARY KEY (tenant_id, recording_ref)
 );
 CREATE INDEX IF NOT EXISTS recordings_by_call ON call_recordings (tenant_id, call_id);
+-- Redacted, one row per finished turn. Deleted after extraction unless the profile keeps it.
+CREATE TABLE IF NOT EXISTS call_turns (
+    tenant_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    speaker TEXT NOT NULL,
+    text TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, call_id, seq)
+);
+CREATE TABLE IF NOT EXISTS call_extractions (
+    tenant_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    fields_json TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    transcript_until TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, call_id)
+);
+-- A contact's fields, each with where its value came from: a person, or a call (with the
+-- quote that justified it). A call never overwrites a person's value.
+CREATE TABLE IF NOT EXISTS contact_attributes (
+    tenant_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source TEXT NOT NULL,
+    call_id TEXT NOT NULL DEFAULT '',
+    quote TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, contact_id, name)
+);
+CREATE TABLE IF NOT EXISTS review_queue (
+    tenant_id TEXT NOT NULL,
+    review_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    current_value TEXT NOT NULL DEFAULT '',
+    call_id TEXT NOT NULL,
+    quote TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    decided_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant_id, review_id)
+);
 CREATE TABLE IF NOT EXISTS call_events (
     provider TEXT NOT NULL,
     provider_event_id TEXT NOT NULL,
@@ -476,6 +527,136 @@ class CommsStore:
         keys = ("recording_ref", "call_id", "state", "duration_seconds", "started_at",
                 "retention_until")
         return [dict(zip(keys, row)) for row in rows]
+
+    # -- transcripts ----------------------------------------------------------------------
+
+    def append_turn(self, call_id: str, speaker: str, text: str, *, at: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO call_turns (tenant_id, call_id, seq, speaker, text, at) "
+                "SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM call_turns "
+                "WHERE tenant_id = ? AND call_id = ?",
+                (self.tenant_id, call_id, speaker, text, at, self.tenant_id, call_id),
+            )
+
+    def turns(self, call_id: str) -> list[tuple[str, str]]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT speaker, text FROM call_turns WHERE tenant_id = ? AND call_id = ? "
+                "ORDER BY seq", (self.tenant_id, call_id)).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def delete_turns(self, call_id: str) -> None:
+        self._write("DELETE FROM call_turns WHERE tenant_id = ? AND call_id = ?",
+                    self.tenant_id, call_id)
+
+    def calls_awaiting_extraction(self, *, limit: int = 20) -> list[str]:
+        """Finished calls with a transcript and no extraction yet, oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.call_id FROM calls c WHERE c.tenant_id = ? AND c.status IN "
+                "('completed', 'failed', 'cancelled') "
+                "AND EXISTS (SELECT 1 FROM call_turns t WHERE t.tenant_id = c.tenant_id "
+                "AND t.call_id = c.call_id) "
+                "AND NOT EXISTS (SELECT 1 FROM call_extractions e WHERE "
+                "e.tenant_id = c.tenant_id AND e.call_id = c.call_id) "
+                "ORDER BY c.updated_at LIMIT ?", (self.tenant_id, int(limit))).fetchall()
+        return [row[0] for row in rows]
+
+    def save_extraction(self, call_id: str, *, model: str, fields: list, summary: str,
+                        error: str, at: str, transcript_until: str) -> bool:
+        """Once per call. False if it was already extracted — a second sweep is a no-op."""
+        try:
+            self._write(
+                "INSERT INTO call_extractions (tenant_id, call_id, model, fields_json, summary, "
+                "error, transcript_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                self.tenant_id, call_id, model, json.dumps(fields), summary, error,
+                transcript_until, at)
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def extraction(self, call_id: str) -> Optional[dict]:
+        row = self._one(
+            "SELECT model, fields_json, summary, error, created_at FROM call_extractions "
+            "WHERE tenant_id = ? AND call_id = ?", self.tenant_id, call_id)
+        if row is None:
+            return None
+        return {"model": row[0], "fields": json.loads(row[1]), "summary": row[2],
+                "error": row[3], "created_at": row[4]}
+
+    def transcripts_due(self, before: str) -> list[str]:
+        """Calls whose kept transcript has passed its keep-until date."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT e.call_id FROM call_extractions e WHERE e.tenant_id = ? AND "
+                "e.transcript_until != '' AND e.transcript_until < ? AND EXISTS (SELECT 1 FROM "
+                "call_turns t WHERE t.tenant_id = e.tenant_id AND t.call_id = e.call_id)",
+                (self.tenant_id, before)).fetchall()
+        return [row[0] for row in rows]
+
+    # -- contact attributes and their review queue ---------------------------------------
+
+    def attribute(self, contact_id: str, name: str) -> Optional[dict]:
+        row = self._one(
+            "SELECT value, source, call_id, quote, updated_at FROM contact_attributes "
+            "WHERE tenant_id = ? AND contact_id = ? AND name = ?",
+            self.tenant_id, contact_id, name)
+        if row is None:
+            return None
+        return dict(zip(("value", "source", "call_id", "quote", "updated_at"), row))
+
+    def attributes(self, contact_id: str) -> dict[str, dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT name, value, source, call_id, quote, updated_at FROM contact_attributes "
+                "WHERE tenant_id = ? AND contact_id = ? ORDER BY name",
+                (self.tenant_id, contact_id)).fetchall()
+        return {row[0]: dict(zip(("value", "source", "call_id", "quote", "updated_at"), row[1:]))
+                for row in rows}
+
+    def set_attribute(self, contact_id: str, name: str, value: str, *, source: str,
+                      at: str, call_id: str = "", quote: str = "") -> None:
+        self._write(
+            "INSERT INTO contact_attributes (tenant_id, contact_id, name, value, source, call_id, "
+            "quote, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, "
+            "contact_id, name) DO UPDATE SET value = excluded.value, source = excluded.source, "
+            "call_id = excluded.call_id, quote = excluded.quote, updated_at = excluded.updated_at",
+            self.tenant_id, contact_id, name, value, source, call_id, quote, at)
+
+    def enqueue_review(self, *, contact_id: str, name: str, value: str, current_value: str,
+                       call_id: str, quote: str, confidence: float, reason: str, at: str) -> str:
+        review_id = uuid.uuid4().hex[:12]
+        self._write(
+            "INSERT INTO review_queue (tenant_id, review_id, contact_id, name, value, "
+            "current_value, call_id, quote, confidence, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            self.tenant_id, review_id, contact_id, name, value, current_value, call_id, quote,
+            float(confidence), reason, at)
+        return review_id
+
+    _REVIEW_KEYS = ("review_id", "contact_id", "name", "value", "current_value", "call_id",
+                    "quote", "confidence", "reason", "status", "decided_by", "created_at")
+
+    def reviews(self, *, status: str = "pending", limit: int = 100) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT {', '.join(self._REVIEW_KEYS)} FROM review_queue WHERE tenant_id = ? "
+                "AND status = ? ORDER BY created_at LIMIT ?",
+                (self.tenant_id, status, int(limit))).fetchall()
+        return [dict(zip(self._REVIEW_KEYS, row)) for row in rows]
+
+    def review(self, review_id: str) -> Optional[dict]:
+        row = self._one(f"SELECT {', '.join(self._REVIEW_KEYS)} FROM review_queue "
+                        "WHERE tenant_id = ? AND review_id = ?", self.tenant_id, review_id)
+        return dict(zip(self._REVIEW_KEYS, row)) if row else None
+
+    def decide_review(self, review_id: str, *, status: str, actor: str, at: str) -> bool:
+        """Close a pending review once. False if it was not pending."""
+        return self._write(
+            "UPDATE review_queue SET status = ?, decided_by = ?, decided_at = ? "
+            "WHERE tenant_id = ? AND review_id = ? AND status = 'pending'",
+            status, actor, at, self.tenant_id, review_id) == 1
 
     def count_active(self, agent: str) -> int:
         statuses = [s.value for s in ACTIVE]

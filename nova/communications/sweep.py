@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from nova.audit import new_correlation_id
 from nova.communications.contracts import ACTIVE, CallStatus, FailureReason, ProviderError
 from nova.communications.gateway import CallGateway
+from nova.communications.extraction import run_pending
 from nova.communications.recording import expire
 from nova.communications.store import CallRecord
 
@@ -107,6 +108,10 @@ def sweep(gateway: CallGateway) -> list[Reconciled]:
         if store.record_event(provider=carrier.id, provider_event_id=event.provider_event_id,
                               call_id=record.call_id, status=event.status, at=_iso(now)):
             settle(record, event.status, f"carrier reports {event.status.value}", event.failure)
+
+    extracted = run_pending(gateway, gateway.extractor)
+    if extracted:
+        out.append(Reconciled("", "", "", f"extracted {extracted} finished call(s)"))
 
     expired = expire(gateway)
     if expired:

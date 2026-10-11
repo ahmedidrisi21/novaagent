@@ -4,19 +4,20 @@ The environment here is the **gateway process's**, never an agent's. Those are d
 processes on purpose: an agent that held these credentials could dial around every rule in
 ``gate.py``.
 
-========================  ============================================================
-Variable                  Used for
-========================  ============================================================
-``TWILIO_ACCOUNT_SID``    Twilio carrier
-``TWILIO_AUTH_TOKEN``     Twilio carrier; also verifies Twilio's callbacks
-``OPENAI_API_KEY``        GPT-Live voice engine
-``OPENAI_PROJECT_ID``     GPT-Live SIP address (``proj_...``)
-``OPENAI_WEBHOOK_SECRET`` verifies GPT-Live's webhooks (``whsec_...``)
-``DEEPGRAM_API_KEY``      cascaded engine: speech recognition
-``CARTESIA_API_KEY``      cascaded engine: speech synthesis
-``CASCADE_LLM_API_KEY``   cascaded engine: the reply model at ``cascade.llm_base_url``
-``CALL_BRIDGE_SECRET``    signs the call token carried across the bridge (32+ chars)
-========================  ============================================================
+============================  ============================================================
+Variable                      Used for
+============================  ============================================================
+``TWILIO_ACCOUNT_SID``        Twilio carrier
+``TWILIO_AUTH_TOKEN``         Twilio carrier; also verifies Twilio's callbacks
+``OPENAI_API_KEY``            GPT-Live voice engine
+``OPENAI_PROJECT_ID``         GPT-Live SIP address (``proj_...``)
+``OPENAI_WEBHOOK_SECRET``     verifies GPT-Live's webhooks (``whsec_...``)
+``DEEPGRAM_API_KEY``          cascaded engine: speech recognition
+``CARTESIA_API_KEY``          cascaded engine: speech synthesis
+``CASCADE_LLM_API_KEY``       cascaded engine: the reply model at ``cascade.llm_base_url``
+``CALL_BRIDGE_SECRET``        signs the call token carried across the bridge (32+ chars)
+``EXTRACTION_LLM_API_KEY``    reads finished calls into fields, at ``extraction.llm_base_url``
+============================  ============================================================
 
 Non-secret settings — which reply model, which speech models — are in
 ``communications.yaml``, never here.
@@ -41,6 +42,7 @@ from nova.communications.cascade import (
     DeepgramCartesiaVoice,
 )
 from nova.communications.contracts import TelephonyProvider, VoiceEngine
+from nova.communications.extraction import extractor_from
 from nova.communications.gateway import CallGateway
 from nova.communications.openai_live import OpenAILiveVoice
 from nova.communications.spec import CASCADED_ENGINE, CommunicationsSpec
@@ -129,4 +131,5 @@ def build_gateway(
         voices=voices,
         call_secret=env.get(SECRET_ENV, "").encode("utf-8") if voices else b"",
         answers=answers,
+        extractor=extractor_from(spec, env),
     )
