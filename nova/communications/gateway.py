@@ -24,7 +24,7 @@ import hmac
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Callable, Mapping, Optional
 
 from nova.audit import AuditLog, new_correlation_id
 from nova.communications.contracts import (
@@ -50,9 +50,13 @@ from nova.communications.gate import (
     CallFacts,
     decide_call,
 )
+from nova.communications.mail import EmailProvider
 from nova.communications.recording import guard_for
 from nova.communications.spec import CommunicationsSpec
 from nova.communications.store import CallRecord, CommsStore
+
+if TYPE_CHECKING:
+    from nova.runtime.base import WorkItem
 
 
 def _iso(moment: datetime) -> str:
@@ -98,6 +102,10 @@ class CallGateway:
         call_secret: bytes = b"",
         answers: Optional[Callable[[CallRecord], Optional[Answerer]]] = None,
         extractor=None,
+        email: Optional[EmailProvider] = None,
+        tasks: Optional[Callable[[WorkItem], str]] = None,
+        link_secret: bytes = b"",
+        public_url: str = "",
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         if audit.tenant_id != store.tenant_id:
@@ -115,6 +123,13 @@ class CallGateway:
         self._answers = answers
         #: Reads finished calls into their purpose's fields. None: transcripts wait.
         self.extractor = extractor
+        #: Sends the follow-up emails calls earn. None: email actions wait.
+        self.email = email
+        #: Puts work on the runtime's board, returning its task id. None: work actions wait.
+        self.tasks = tasks
+        #: Signs the unsubscribe link in every email.
+        self.link_secret = link_secret
+        self.public_url = public_url or spec.public_url
         self._clock = clock
 
     def call_token(self, call_id: str) -> str:
@@ -278,11 +293,15 @@ class CallGateway:
         return self._require(call_id)
 
     def opt_out(self, contact_id: str, *, reason: str, source: str) -> None:
-        """Suppress a contact. Takes effect for every agent and every later request at once."""
-        self.store.suppress(contact_id, reason=reason, at=_iso(self._clock()))
+        """Suppress a contact. Takes effect for every agent, every channel and every later
+        request at once, and cancels callbacks and emails still waiting to go out."""
+        at = _iso(self._clock())
+        self.store.suppress(contact_id, reason=reason, at=at)
+        cancelled = self.store.cancel_outreach(contact_id, reason="the contact opted out", at=at)
         self.audit.record(
             "communications.contact.suppressed", correlation_id=new_correlation_id(),
-            subject=contact_id, detail={"reason": reason, "source": source},
+            subject=contact_id, detail={"reason": reason, "source": source,
+                                        "cancelled_actions": cancelled},
         )
 
     def _require(self, call_id: str) -> CallRecord:

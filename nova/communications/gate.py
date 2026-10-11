@@ -36,6 +36,10 @@ class Contact:
     #: IANA zone, e.g. ``America/Chicago``. Empty means unknown, which denies.
     timezone: str
     groups: tuple[str, ...] = ()
+    #: How a follow-up email addresses them, and where it goes. A call never changes
+    #: either: an address spoken on a call is not an address on file.
+    name: str = ""
+    email: str = ""
 
 
 @dataclass(frozen=True)

@@ -132,6 +132,9 @@ WRITE_ROUTES: Mapping[str, str] = {
     # Accepting or rejecting a value a call proposed for a customer record. Admin: an
     # approval makes it a person's value, which later calls cannot overwrite.
     "/communications/reviews/decide": "admin",
+    # Approving or rejecting what a call proposed doing: a callback, an email, a task.
+    # Admin: approving sends the email or places the call.
+    "/communications/calls/plan": "admin",
     # Pausing, resuming or deleting a schedule the runtime already holds. Admin:
     # stopping a nightly reconciliation is as consequential as releasing held work.
     "/automations/decide": "admin",

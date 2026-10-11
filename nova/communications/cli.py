@@ -95,6 +95,20 @@ def register(sub) -> None:
     forget.add_argument("contact_id")
     forget.add_argument("--actor", default="")
 
+    actions = command("actions", "post-call action plans waiting for a person, or one call's plan")
+    actions.add_argument("--call", default="", help="one call's whole plan, with its digest")
+    actions.add_argument("--stats", action="store_true",
+                         help="per action kind: proposed, approved and rejected by people")
+    actions.add_argument("--json", action="store_true")
+
+    decide_actions = command("decide-actions", "approve or reject a call's waiting actions",
+                             call=True)
+    decide_actions.add_argument("--digest", required=True,
+                                help="from `nova calls actions --call`: what you looked at")
+    decide_actions.add_argument("--approve", nargs="*", default=[], metavar="ACTION_ID")
+    decide_actions.add_argument("--reject", nargs="*", default=[], metavar="ACTION_ID")
+    decide_actions.add_argument("--actor", default="")
+
     contacts = command("import-contacts", "import contacts and consent from a CRM CSV export")
     contacts.add_argument("csv", type=Path)
 
@@ -128,8 +142,22 @@ def _open(args, runtime_factory):
         public_url=public_url or _NO_PUBLIC_URL,
         knowledge_index=runtime.knowledge_index_path,
         knowledge_grants={spec.id: spec.knowledge.sources for spec in bundle.agents},
+        tasks=task_submitter(runtime, audit),
     )
     return bundle, gateway, public_url
+
+
+def task_submitter(runtime, audit):
+    """Post-call work onto the runtime's board, idempotent on the action's key. None when
+    the runtime takes no submitted work: work actions then wait rather than fail."""
+    if not runtime.capabilities.work_submission:
+        return None
+
+    def submit(item) -> str:
+        result = runtime.submit_work([item], audit=audit, correlation_id=new_correlation_id())
+        return result.task_id(item.key)
+
+    return submit
 
 
 def _print_call(record) -> None:
@@ -277,6 +305,58 @@ def _decide_review(args, bundle, gateway, public_url) -> int:
     return 0
 
 
+def _print_action(action) -> None:
+    when = f" at {action['run_at']}" if action["run_at"] else ""
+    print(f"  {action['action_id']}  {action['kind']:18} {action['status']:18} "
+          f"[{action['tier']}]{when}")
+    for key, value in action["params"].items():
+        text = str(value).replace("\n", " ")
+        print(f"      {key}: {text[:100]}{'…' if len(text) > 100 else ''}")
+    if action["quote"]:
+        print(f'      "{action["quote"]}"')
+    for key in ("note", "error", "result"):
+        if action[key]:
+            print(f"      {key}: {action[key]}")
+
+
+def _actions(args, bundle, gateway, public_url) -> int:
+    from nova.communications.actions import plan_view
+
+    if args.stats:
+        print(json.dumps(gateway.store.action_stats(), indent=2))
+        return 0
+    if args.call:
+        view = plan_view(gateway.store, args.call)
+        if args.json:
+            print(json.dumps(view, indent=2))
+            return 0
+        print(f"call {args.call}  digest {view['digest']}")
+        for action in view["actions"]:
+            _print_action(action)
+        return 0
+    waiting = gateway.store.actions(status="awaiting_approval")
+    if args.json:
+        print(json.dumps(waiting, indent=2))
+        return 0
+    for call_id in dict.fromkeys(a["call_id"] for a in waiting):
+        print(f"call {call_id}  (decide with: nova calls actions BUNDLE --call {call_id})")
+        for action in (a for a in waiting if a["call_id"] == call_id):
+            _print_action(action)
+    if not waiting:
+        print("no actions waiting for a person")
+    return 0
+
+
+def _decide_actions(args, bundle, gateway, public_url) -> int:
+    from nova.communications.actions import decide_plan
+
+    view = decide_plan(gateway, args.call_id, digest=args.digest, approve=args.approve,
+                       reject=args.reject, actor=_actor(args))
+    for action in view["actions"]:
+        _print_action(action)
+    return 0
+
+
 def _contact(args, bundle, gateway, public_url) -> int:
     values = gateway.store.attributes(args.contact_id)
     if args.json:
@@ -372,4 +452,6 @@ _COMMANDS = {
     "decide-review": _decide_review,
     "contact": _contact,
     "set-attribute": _set_attribute,
+    "actions": _actions,
+    "decide-actions": _decide_actions,
 }

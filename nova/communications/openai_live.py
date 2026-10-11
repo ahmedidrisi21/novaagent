@@ -19,9 +19,6 @@ and the Standard Webhooks specification for signatures.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import itertools
 import json
 import logging
@@ -39,6 +36,7 @@ from nova.communications.contracts import (
     SipVoiceEngine,
     VoiceSessionRequest,
 )
+from nova.communications import signing
 from nova.communications.http import Transport, urllib_transport
 
 log = logging.getLogger(__name__)
@@ -47,9 +45,6 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-live-1"
 DEFAULT_VOICE = "marin"
 SIP_HOSTS = {"us": "sip.api.openai.com", "eu": "sip-eu.api.openai.com"}
-
-#: Seconds a webhook's timestamp may differ from now before it is treated as a replay.
-TOLERANCE = 300
 
 #: The deprecated name is accepted during the vendor's migration window.
 INCOMING_EVENTS = frozenset({"live.transport.incoming", "live.call.incoming"})
@@ -163,13 +158,6 @@ class LiveSideband:
             self._send("session.commentary.append", delegation_id, reply[start:start + APPEND_CHARS])
 
 
-def sign(secret: str, message_id: str, timestamp: str, body: bytes) -> str:
-    """A Standard Webhooks ``v1`` signature: HMAC-SHA256 over ``id.timestamp.body``."""
-    key = base64.b64decode(secret.split("_", 1)[1] if secret.startswith("whsec_") else secret)
-    signed = message_id.encode() + b"." + timestamp.encode() + b"." + body
-    return base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode("ascii")
-
-
 class OpenAILiveVoice(SipVoiceEngine):
     id = "openai-live"
 
@@ -218,20 +206,7 @@ class OpenAILiveVoice(SipVoiceEngine):
         )
 
     def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
-        lowered = {k.lower(): v for k, v in headers.items()}
-        message_id = lowered.get("webhook-id", "")
-        timestamp = lowered.get("webhook-timestamp", "")
-        given = lowered.get("webhook-signature", "")
-        if not (message_id and timestamp.isdigit() and given):
-            return False
-        if abs(self._clock() - int(timestamp)) > TOLERANCE:
-            return False
-        expected = sign(self._secret, message_id, timestamp, body)
-        # The header may list several space-separated signatures during secret rotation.
-        return any(
-            part.startswith("v1,") and hmac.compare_digest(part[3:], expected)
-            for part in given.split()
-        )
+        return signing.verify(self._secret, headers, body, now=self._clock())
 
     def parse_incoming(self, headers: Mapping[str, str], body: bytes) -> Optional[IncomingSession]:
         try:

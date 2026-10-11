@@ -74,10 +74,11 @@ def _write_route(tail: str) -> Optional[str]:
     # the runtime holding half of a routing table.
     if len(parts) == 2 and parts[0] == "channels":
         return f"/{parts[0]}/{parts[1]}"
-    # /communications/calls/<id>/decide and /communications/reviews/<id>/decide.
-    if len(parts) == 4 and parts[0] == "communications" and parts[1] in ("calls", "reviews") \
-            and parts[3] == "decide":
-        return f"/communications/{parts[1]}/decide"
+    # /communications/calls/<id>/decide, /communications/calls/<id>/plan and
+    # /communications/reviews/<id>/decide.
+    if len(parts) == 4 and parts[0] == "communications" and (parts[1], parts[3]) in (
+            ("calls", "decide"), ("calls", "plan"), ("reviews", "decide")):
+        return f"/communications/{parts[1]}/{parts[3]}"
     # Collection-level create: POST /automations. Declaring a new governed object is an
     # act on the collection, not on a member that does not exist yet.
     if parts == ["automations"]:
@@ -199,6 +200,10 @@ class ControlAPI:
             from nova.control.api_calls import decide_review
 
             return decide_review(self, tail, principal, payload)
+        if route == "/communications/calls/plan":
+            from nova.control.api_calls import decide_plan
+
+            return decide_plan(self, tail, principal, payload)
         if route == "/agents/create":
             return self._create_agent(principal, payload)
         if route.startswith("/settings/"):
@@ -339,6 +344,14 @@ class ControlAPI:
             from nova.control.api_calls import list_reviews
 
             return list_reviews(self, query)
+        if tail == "/communications/actions":
+            from nova.control.api_calls import list_actions
+
+            return list_actions(self, query)
+        if tail == "/communications/actions/stats":
+            from nova.control.api_calls import action_stats
+
+            return action_stats(self, query)
         if tail.startswith("/communications/contacts/"):
             from nova.control.api_calls import get_contact
 

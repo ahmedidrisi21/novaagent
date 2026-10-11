@@ -13,7 +13,7 @@ import yaml
 from nova.channels.providers import Verification
 from nova.communications import Contact, catalogue, decide_call, parse_communications
 from nova.communications.gate import ALLOW, DENY, REQUIRE_APPROVAL, CallFacts
-from nova.communications.providers import TELEPHONY_CAPABILITIES, VOICE_CAPABILITIES, Kind
+from nova.communications.providers import CAPABILITY_NAMES
 from nova.control import ControlAPI
 from nova.control.auth import Principal
 from nova.errors import SpecError
@@ -159,8 +159,7 @@ def test_first_contact_needs_approval_and_later_ones_do_not():
 
 def test_every_capability_answers_a_question_the_catalogue_asks():
     for provider in catalogue():
-        asked = VOICE_CAPABILITIES if provider.kind is Kind.VOICE else TELEPHONY_CAPABILITIES
-        assert set(provider.capabilities) <= set(asked), provider.id
+        assert set(provider.capabilities) <= set(CAPABILITY_NAMES[provider.kind]), provider.id
 
 
 def test_nothing_claims_more_than_vendor_documentation_without_code_to_show_for_it():

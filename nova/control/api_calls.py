@@ -65,6 +65,9 @@ def get_call(api, call_id: str):
         record = store.call(call_id)
         recordings = store.recordings(call_id=call_id) if record is not None else []
         extraction = store.extraction(call_id) if record is not None else None
+        plan = _plan(store, call_id) if record is not None else None
+        emails = [{k: e[k] for k in _EMAIL_META} for e in store.emails(call_id=call_id)] \
+            if record is not None else []
     finally:
         store.close()
     if record is None:
@@ -73,7 +76,70 @@ def get_call(api, call_id: str):
     # plane that proxied it would be one more place a recording can leak from.
     return Response(200, {**record.to_dict(), "recordings": [
         {k: r[k] for k in ("state", "duration_seconds", "started_at", "retention_until")}
-        for r in recordings], "extraction": extraction})
+        for r in recordings], "extraction": extraction, "plan": plan, "emails": emails})
+
+
+#: What the call monitor shows of an email. Never the text: message bodies are more
+#: sensitive than delivery state, and the text is the tenant's template anyway.
+_EMAIL_META = ("email_id", "action_id", "subject", "status", "detail", "created_at",
+               "updated_at")
+
+
+def _plan(store, call_id: str):
+    from nova.communications.actions import plan_view
+
+    return plan_view(store, call_id)
+
+
+def list_actions(api, query: Mapping[str, str]):
+    """Plans with actions waiting for a person, one per call, each with its digest."""
+    from nova.communications.store import CommsStore
+    from nova.control.api import Response
+
+    store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
+    try:
+        waiting = store.actions(status="awaiting_approval")
+        plans = [_plan(store, call_id) for call_id in dict.fromkeys(a["call_id"] for a in waiting)]
+        return Response(200, {"plans": plans})
+    finally:
+        store.close()
+
+
+def action_stats(api, query: Mapping[str, str]):
+    """Per action kind, how often people approved or rejected it: the evidence an
+    administrator needs before moving a kind to ``auto``. The system never moves it."""
+    from nova.communications.store import CommsStore
+    from nova.control.api import Response
+
+    store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
+    try:
+        tiers = {r.kind: r.tier for r in api.bundle.communications.actions.rules.values()}
+        return Response(200, {"kinds": {kind: {"tier": tiers.get(kind, ""), **counts}
+                                        for kind, counts in store.action_stats().items()}})
+    finally:
+        store.close()
+
+
+def decide_plan(api, tail: str, principal, payload: Mapping[str, Any]):
+    from nova.communications.actions import decide_plan as decide
+    from nova.control.api import Response
+    from nova.control.api import _error as error
+
+    call_id = tail.strip("/").split("/")[2]
+    approve, reject = payload.get("approve") or [], payload.get("reject") or []
+    if not (isinstance(approve, list) and isinstance(reject, list)) or not (approve or reject):
+        return error(400, "give approve and/or reject as lists of action ids")
+    gateway = _gateway(api, principal.name)
+    try:
+        return Response(200, decide(gateway, call_id, digest=str(payload.get("digest") or ""),
+                                    approve=[str(a) for a in approve],
+                                    reject=[str(r) for r in reject], actor=principal.name))
+    except KeyError:
+        return error(404, "no such call in this tenant", call_id=call_id)
+    except ValueError as exc:
+        return error(409, str(exc), call_id=call_id)
+    finally:
+        gateway.store.close()
 
 
 def _approve(gateway, call_id, principal, reason):

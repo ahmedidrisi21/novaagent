@@ -30,6 +30,7 @@ from nova.communications.contracts import (
     advances,
 )
 from nova.communications.gate import Contact
+from nova.communications.store_actions import ACTIONS_SCHEMA, ActionsStoreMixin
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS contacts (
     phone TEXT NOT NULL,
     timezone TEXT NOT NULL DEFAULT '',
     groups_json TEXT NOT NULL DEFAULT '[]',
+    name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (tenant_id, contact_id)
 );
 CREATE TABLE IF NOT EXISTS consents (
@@ -219,7 +222,7 @@ def _call(row: Optional[tuple]) -> Optional[CallRecord]:
     return CallRecord(*values)
 
 
-class CommsStore:
+class CommsStore(ActionsStoreMixin):
     def __init__(self, path: Path | str, *, tenant_id: str) -> None:
         self.path = Path(path)
         self.tenant_id = tenant_id
@@ -230,6 +233,7 @@ class CommsStore:
         )
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        self._db.executescript(ACTIONS_SCHEMA)
         self._migrate()
 
     def _migrate(self) -> None:
@@ -239,6 +243,10 @@ class CommsStore:
                        "recording_evidence"):
             if column not in have:
                 self._db.execute(f"ALTER TABLE calls ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        have = {row[1] for row in self._db.execute("PRAGMA table_info(contacts)")}
+        for column in ("name", "email"):
+            if column not in have:
+                self._db.execute(f"ALTER TABLE contacts ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         self._db.close()
@@ -255,23 +263,23 @@ class CommsStore:
 
     def put_contact(self, contact: Contact) -> None:
         self._write(
-            "INSERT INTO contacts (tenant_id, contact_id, phone, timezone, groups_json) "
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, contact_id) DO UPDATE SET "
-            "phone = excluded.phone, timezone = excluded.timezone, "
-            "groups_json = excluded.groups_json",
+            "INSERT INTO contacts (tenant_id, contact_id, phone, timezone, groups_json, name, "
+            "email) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, contact_id) DO UPDATE "
+            "SET phone = excluded.phone, timezone = excluded.timezone, "
+            "groups_json = excluded.groups_json, name = excluded.name, email = excluded.email",
             self.tenant_id, contact.contact_id, contact.phone, contact.timezone,
-            json.dumps(list(contact.groups)),
+            json.dumps(list(contact.groups)), contact.name, contact.email,
         )
 
     def contact(self, contact_id: str) -> Optional[Contact]:
         row = self._one(
-            "SELECT contact_id, phone, timezone, groups_json FROM contacts "
+            "SELECT contact_id, phone, timezone, groups_json, name, email FROM contacts "
             "WHERE tenant_id = ? AND contact_id = ?",
             self.tenant_id, contact_id,
         )
         if row is None:
             return None
-        return Contact(row[0], row[1], row[2], tuple(json.loads(row[3])))
+        return Contact(row[0], row[1], row[2], tuple(json.loads(row[3])), row[4], row[5])
 
     def grant_consent(self, contact_id: str, kind: str, *, evidence: str, at: str) -> None:
         """Record consent. ``evidence`` says where it came from — a form id, a call id."""
@@ -562,19 +570,6 @@ class CommsStore:
                 "e.tenant_id = c.tenant_id AND e.call_id = c.call_id) "
                 "ORDER BY c.updated_at LIMIT ?", (self.tenant_id, int(limit))).fetchall()
         return [row[0] for row in rows]
-
-    def save_extraction(self, call_id: str, *, model: str, fields: list, summary: str,
-                        error: str, at: str, transcript_until: str) -> bool:
-        """Once per call. False if it was already extracted — a second sweep is a no-op."""
-        try:
-            self._write(
-                "INSERT INTO call_extractions (tenant_id, call_id, model, fields_json, summary, "
-                "error, transcript_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                self.tenant_id, call_id, model, json.dumps(fields), summary, error,
-                transcript_until, at)
-        except sqlite3.IntegrityError:
-            return False
-        return True
 
     def extraction(self, call_id: str) -> Optional[dict]:
         row = self._one(
