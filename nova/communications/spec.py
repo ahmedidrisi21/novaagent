@@ -50,6 +50,9 @@ class Purpose:
     description: str = ""
     #: A marketing purpose needs prior express written consent on top of AI-voice consent.
     marketing: bool = False
+    #: What the voice engine is told the call is for and how to conduct it. Tenant text,
+    #: reviewed like any other prompt; the model never writes its own.
+    instructions: str = ""
 
     def required_consents(self) -> tuple[str, ...]:
         if self.marketing:
@@ -57,7 +60,12 @@ class Purpose:
         return (CONSENT_AI_VOICE,)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "description": self.description, "marketing": self.marketing}
+        return {
+            "id": self.id,
+            "description": self.description,
+            "marketing": self.marketing,
+            "instructions": self.instructions,
+        }
 
 
 @dataclass(frozen=True)
@@ -123,6 +131,8 @@ class CommunicationsSpec:
     purposes: Mapping[str, Purpose] = field(default_factory=dict)
     profiles: tuple[CallingProfile, ...] = ()
     allow_test_providers: bool = False
+    #: Spoken by the carrier, word for word, before any model is on the line.
+    disclosure: str = ""
 
     @property
     def declared(self) -> bool:
@@ -141,6 +151,7 @@ class CommunicationsSpec:
             "caller_ids": list(self.caller_ids),
             "calling_hours": {"start": _fmt(self.window_start), "end": _fmt(self.window_end)},
             "allow_test_providers": self.allow_test_providers,
+            "disclosure": self.disclosure,
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -306,6 +317,7 @@ def parse_communications(
             id=pdoc.identifier("id"),
             description=pdoc.str_("description"),
             marketing=pdoc.bool_("marketing", default=False),
+            instructions=pdoc.str_("instructions"),
         )
         pdoc.reject_unknown()
         if purpose.id in purposes:
@@ -336,7 +348,15 @@ def parse_communications(
                 source=source,
             )
         profiles.append(profile)
+    disclosure = doc.str_("disclosure")
     doc.reject_unknown()
+    if profiles and not disclosure:
+        raise SpecError(
+            "is required once any agent may call — the words spoken before the agent, "
+            "saying it is an AI and who it calls for",
+            field="communications.disclosure",
+            source=source,
+        )
 
     return CommunicationsSpec(
         voice_providers=voice,
@@ -347,6 +367,7 @@ def parse_communications(
         purposes=purposes,
         profiles=tuple(profiles),
         allow_test_providers=allow_test,
+        disclosure=disclosure,
     )
 
 

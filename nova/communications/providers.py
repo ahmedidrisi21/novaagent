@@ -105,20 +105,21 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         label="OpenAI GPT-Live",
         capabilities={
             "speech_to_speech": _vendor(True),
-            # Read in source: the runtime's voice mode already delegates every request to
-            # the agent as a client-delegation backend.
+            # Over SIP, delegation arrives on a sideband WebSocket this layer does not open
+            # yet, so on a phone call the model runs on its instructions alone.
             "tool_calls": Capability(
-                supported=True,
+                supported=False,
                 verification=Verification.SOURCE_READ,
-                note="delegates each request to the agent; see tools/voice_live.py",
+                note="not on phone calls yet: needs the sideband connection",
             ),
             "barge_in": _vendor(True),
-            "native_phone": _vendor(True, "vendor documents SIP plus Twilio and Telnyx paths"),
+            "native_phone": _tested(True),
             "audio_stays_in_tenant_cloud": _vendor(False),
-            "text_transcript": _vendor(True, "from session events"),
+            "text_transcript": _vendor(True, "from session events; not collected yet"),
         },
-        verification=Verification.SOURCE_READ,
-        implementation="tools/voice_live.py (desktop voice mode; no phone adapter yet)",
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/openai_live.py",
+        caveat="Exercised against a scripted stand-in only; no live call has been placed.",
     ),
     CommsProvider(
         id="elevenlabs-agents",
@@ -169,14 +170,17 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         kind=Kind.TELEPHONY,
         label="Twilio Voice",
         capabilities={
-            "outbound": _vendor(True),
-            "inbound": _vendor(True),
-            "transfer": _vendor(True),
-            "answering_machine_detection": _vendor(True),
-            "recording": _vendor(True),
-            "signed_webhooks": _vendor(True),
+            "outbound": _tested(True),
+            "inbound": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "transfer": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "answering_machine_detection": _tested(True),
+            "recording": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "signed_webhooks": _tested(True),
         },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/twilio.py",
         caveat=(
+            "Exercised against a scripted stand-in only; no live call has been placed. "
             "The runtime's SMS adapter reads Twilio credentials from an agent's own "
             "environment. An agent holding them can reach Twilio without this gateway; "
             "keep voice credentials out of agent environments."

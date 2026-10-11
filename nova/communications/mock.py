@@ -1,9 +1,9 @@
 """Test doubles for a carrier and a voice engine. They place no call and play no audio.
 
-They are real implementations of the contracts, not stubs: callbacks are HMAC-signed and
-verified, failures raise the same normalized errors a carrier adapter must raise, and the
-contract tests run every adapter — these first — through the same checks. A future Twilio
-adapter passes those tests or it does not ship.
+They are real implementations of the contracts, not stubs: callbacks and webhooks are
+HMAC-signed and verified, failures raise the same normalized errors a real adapter must
+raise, and the contract tests run every adapter — these and the vendor ones — through the
+same checks.
 """
 
 from __future__ import annotations
@@ -14,17 +14,29 @@ import json
 from typing import Any, Mapping, Optional
 
 from nova.communications.contracts import (
+    AnswerPlan,
     CallStatus,
     FailureReason,
+    IncomingSession,
     PlaceCall,
     ProviderError,
     ProviderEvent,
+    SipTarget,
     TelephonyProvider,
     VoiceSessionProvider,
     VoiceSessionRequest,
 )
 
 SIGNATURE_HEADER = "x-mock-signature"
+
+
+def _sign(secret: bytes, body: bytes) -> str:
+    return hmac.new(secret, body, hashlib.sha256).hexdigest()
+
+
+def _signed(secret: bytes, headers: Mapping[str, str], body: bytes) -> bool:
+    given = {k.lower(): v for k, v in headers.items()}.get(SIGNATURE_HEADER, "")
+    return hmac.compare_digest(given, _sign(secret, body))
 
 
 class MockTelephony(TelephonyProvider):
@@ -48,19 +60,16 @@ class MockTelephony(TelephonyProvider):
         if provider_call_ref not in self.ended:
             self.ended.append(provider_call_ref)
 
-    def _sign(self, body: bytes) -> str:
-        return hmac.new(self._secret, body, hashlib.sha256).hexdigest()
-
     def verify(self, headers: Mapping[str, str], body: bytes, url: str) -> bool:
-        given = {k.lower(): v for k, v in headers.items()}.get(SIGNATURE_HEADER, "")
-        return hmac.compare_digest(given, self._sign(body))
+        return _signed(self._secret, headers, body)
 
-    def normalize(self, payload: Mapping[str, Any]) -> ProviderEvent:
+    def parse(self, headers: Mapping[str, str], body: bytes, url: str) -> ProviderEvent:
         try:
+            payload = json.loads(body.decode("utf-8"))
             status = CallStatus(payload["status"])
             event_id = str(payload["event_id"])
             ref = str(payload["call_ref"])
-        except (KeyError, ValueError) as exc:
+        except (KeyError, ValueError, TypeError, UnicodeDecodeError) as exc:
             raise ValueError(f"not a mock carrier callback: {exc}") from exc
         failure = payload.get("failure")
         return ProviderEvent(
@@ -68,34 +77,76 @@ class MockTelephony(TelephonyProvider):
             provider_event_id=event_id,
             provider_call_ref=ref,
             status=status,
-            occurred_at=str(payload.get("at", "")),
             failure=FailureReason(failure) if failure else None,
+            call_id_hint=str(payload.get("call_id", "")),
         )
+
+    def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
+        out: dict[str, Any] = {"hang_up": plan.hang_up or plan.connect is None}
+        if not out["hang_up"]:
+            out.update(say=plan.say, uri=plan.connect.uri, headers=dict(plan.connect.headers))
+        return "application/json", json.dumps(out, sort_keys=True).encode("utf-8")
 
     def callback(
         self, call_ref: str, status: CallStatus, *, event_id: str,
-        failure: Optional[FailureReason] = None,
+        failure: Optional[FailureReason] = None, call_id: str = "",
     ) -> tuple[dict[str, str], bytes]:
         """A signed callback as the carrier would send it: ``(headers, body)``."""
         payload: dict[str, Any] = {"event_id": event_id, "call_ref": call_ref, "status": status.value}
         if failure is not None:
             payload["failure"] = failure.value
+        if call_id:
+            payload["call_id"] = call_id
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
-        return {SIGNATURE_HEADER: self._sign(body)}, body
+        return {SIGNATURE_HEADER: _sign(self._secret, body)}, body
 
 
 class MockVoice(VoiceSessionProvider):
     id = "mock-voice"
 
-    def __init__(self) -> None:
-        self.open: dict[str, VoiceSessionRequest] = {}
-        self.closed: list[str] = []
+    def __init__(self, *, secret: bytes = b"mock-voice-secret") -> None:
+        self._secret = secret
+        self.accepted: dict[str, VoiceSessionRequest] = {}
+        self.rejected: list[str] = []
+        self.hung_up: list[str] = []
+        self.fail_next = False
 
-    def open_session(self, request: VoiceSessionRequest) -> str:
-        session_id = f"mock-session-{request.call_id}"
-        self.open[session_id] = request
-        return session_id
+    def sip_target(self, call_id: str, token: str) -> SipTarget:
+        return SipTarget("sip:agent@voice.test", {"X-Call-Id": call_id, "X-Call-Token": token})
 
-    def close_session(self, session_id: str) -> None:
-        if self.open.pop(session_id, None) is not None:
-            self.closed.append(session_id)
+    def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
+        return _signed(self._secret, headers, body)
+
+    def parse_incoming(self, headers: Mapping[str, str], body: bytes) -> Optional[IncomingSession]:
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ValueError(f"unreadable: {exc}") from exc
+        if payload.get("type") != "incoming":
+            return None
+        return IncomingSession(
+            session_id=str(payload["session_id"]),
+            event_id=str(payload["event_id"]),
+            headers={k.lower(): v for k, v in payload.get("headers", {}).items()},
+        )
+
+    def accept(self, session_id: str, request: VoiceSessionRequest) -> None:
+        if self.fail_next:
+            self.fail_next = False
+            raise ProviderError("mock voice engine refused")
+        self.accepted[session_id] = request
+
+    def reject(self, session_id: str) -> None:
+        self.rejected.append(session_id)
+
+    def hang_up(self, session_id: str) -> None:
+        if session_id not in self.hung_up:
+            self.hung_up.append(session_id)
+
+    def incoming(
+        self, *, session_id: str, event_id: str, sip_headers: Mapping[str, str]
+    ) -> tuple[dict[str, str], bytes]:
+        """A signed incoming-session webhook: ``(headers, body)``."""
+        body = json.dumps({"type": "incoming", "session_id": session_id, "event_id": event_id,
+                           "headers": dict(sip_headers)}).encode("utf-8")
+        return {SIGNATURE_HEADER: _sign(self._secret, body)}, body

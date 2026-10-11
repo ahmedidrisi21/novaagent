@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = {
     "communications": {
         "allow_test_providers": True,
+        "disclosure": "Hi, this is an AI assistant calling for Acme.",
         "voice_providers": ["mock-voice"],
         "telephony_providers": ["mock-telephony"],
         "caller_ids": ["+15555550100"],
