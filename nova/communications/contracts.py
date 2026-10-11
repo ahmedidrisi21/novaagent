@@ -206,6 +206,15 @@ class TelephonyProvider(ABC):
     def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
         """The carrier's own reply to its answer request: ``(content_type, body)``."""
 
+    @abstractmethod
+    def fetch_status(self, provider_call_ref: str) -> Optional[ProviderEvent]:
+        """Ask the carrier where a call stands, for reconciliation after missed callbacks.
+
+        Returns None when the carrier has no such call. Raises :class:`ProviderError` when
+        the carrier cannot be asked — which is not the same answer, and must not be
+        treated as one.
+        """
+
 
 @dataclass(frozen=True)
 class VoiceSessionRequest:

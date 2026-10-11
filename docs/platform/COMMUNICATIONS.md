@@ -226,16 +226,62 @@ port 8091 at the TLS proxy.
   actions (Phase 4), approved through policy.
 - **No `nova` CLI command yet** starts the listeners; the snippet above is the entry point.
 
+## Phase 3: operating calls
+
+### `nova calls`
+
+| Command | What it does |
+|---|---|
+| `serve BUNDLE` | webhook listener, media bridge (when a stream engine is configured) and the reconciliation sweep, in one process |
+| `check BUNDLE` | names any credential the gateway is missing, never a value |
+| `import-contacts BUNDLE FILE.csv` | contacts and consent from a CRM export (columns below) |
+| `consent BUNDLE grant\|revoke CONTACT KIND --evidence …` | one consent record; granting without evidence is refused |
+| `opt-out BUNDLE CONTACT` | no agent calls this contact again |
+| `list BUNDLE [--status] [--agent] [--json]` | recent calls |
+| `approve\|reject\|end BUNDLE CALL_ID` | the operator's three actions, audited under `$USER` or `--actor` |
+| `reconcile BUNDLE` | one sweep, now |
+
+Contacts CSV: `contact_id, phone (E.164), timezone (IANA), groups (;-separated)`, and
+optionally `ai_voice_consent` and `marketing_consent`. A consent cell holds **evidence**
+(a form id, URL or call id); a bare `yes` is rejected. Bad rows are reported by line and
+skipped. The audit records counts, never numbers.
+
+Calls live in the runtime's `calls_store_path` (`<home>/nova-calls.db`). The public URL is
+`communications.public_url`, overridable with `--public-url`.
+
+### Reconciliation
+
+Carriers deliver callbacks when they can; a crash or a dropped webhook leaves a call the
+store still thinks is ringing, holding one of its agent's concurrency slots. The sweep (every
+60 s under `serve`) settles those **by asking the carrier**, never by assuming:
+
+| Stuck in | After | Becomes |
+|---|---|---|
+| `approval_required` | 24 h | `cancelled`: an approval for yesterday's context is not an approval |
+| `requested` | 10 min | `failed`: the process died between decision and dial; nothing was dialled |
+| `initiated`, no carrier reference | 10 min | `failed`: the carrier never confirmed it and sent nothing |
+| live, past its own time limit + 5 min | — | whatever the carrier reports; left alone if the carrier cannot be reached |
+
+### The call monitor (Control API)
+
+| Route | Role | |
+|---|---|---|
+| `GET /platform/v1/communications/calls?status=&agent=&limit=` | admin | recent calls and how many are live |
+| `GET /platform/v1/communications/calls/<id>` | admin | one call |
+| `POST /platform/v1/communications/calls/<id>/decide` `{action: approve\|reject\|end}` | admin | audited under the person; an approval re-runs the gate and answers 409 when the call is no longer callable |
+
+Admin throughout: a call list names customers, and approving dials a real person. The
+dashboard's source is not in this repository, so the screen for these routes is not here.
+
 ## Not built yet, in the order it lands
 
-1. **Next:** a first live call on a test number, then a CLI command for the listeners.
-2. **Phase 3:** reconciliation for a call left in `initiated` with no carrier reference
-   after a crash; live call monitor; recording with consent.
+1. **Next:** a first live call on a test number.
+2. **Recording with consent:** consent captured on the call, pause/resume around card
+   numbers, tenant-keyed storage and retention. Its own change, with legal review.
 3. **Phase 4:** the agent-facing `communications` toolset (request a call, read its status),
    added per session from the calling profile, never through an environment variable;
    transcripts, extraction and post-call actions.
 4. **Phase 5:** Bedrock Nova Sonic, ElevenLabs Agents if the benchmark justifies it, mid-call
    failover.
 
-Contacts and consent are written through `CommsStore` directly today. A CRM import and a
-dashboard screen for them come with Phase 3.
+A dashboard screen for the call monitor needs the dashboard's source, which is not here.

@@ -1074,6 +1074,13 @@ class AgentRuntime(ABC):
         """
         return self.state_location / "nova-knowledge.db"
 
+    @property
+    def calls_store_path(self) -> Path:
+        """Where this runtime's deployment keeps phone-call state: contacts, consent,
+        suppressions and calls. On the contract for the reason :attr:`knowledge_index_path`
+        is."""
+        return self.state_location / "nova-calls.db"
+
     def limit_facts(self) -> tuple:
         """What each NOVA limit actually does on this runtime.
 
