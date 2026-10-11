@@ -6,10 +6,12 @@ accepts it with the purpose's instructions and the agent's voice — or rejects 
 call token in the SIP headers does not check out. Only HTTPS requests leave this process;
 the audio never passes through it.
 
-**Not yet wired: tool delegation.** Over SIP, delegation events arrive on a sideband
-WebSocket, which needs a client this layer does not have (standard library only). Until
-then the voice model runs on its instructions alone and cannot look anything up or act
-mid-call. The provider catalogue says so.
+**Mid-call questions go over a sideband.** When the gateway has an answerer, the session
+is accepted with client delegation and :class:`LiveSideband` attaches to it over a
+WebSocket. Each ``session.delegation.created`` is answered from what the caller just said,
+by a read-only lookup, and the answer is appended as commentary for the voice to
+paraphrase. The delegation event carries no question text by design, so the question is
+the caller's speech since the last delegation.
 
 Vendor contract: https://developers.openai.com/api/docs/guides/realtime-sip (Live sessions)
 and the Standard Webhooks specification for signatures.
@@ -20,18 +22,25 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import itertools
 import json
+import logging
+import threading
 import time
 from typing import Callable, Mapping, Optional
 
 from nova.communications.contracts import (
+    Answerer,
     IncomingSession,
+    MediaChannel,
     ProviderError,
     SipTarget,
-    VoiceSessionProvider,
+    SipVoiceEngine,
     VoiceSessionRequest,
 )
 from nova.communications.http import Transport, urllib_transport
+
+log = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-live-1"
@@ -49,6 +58,75 @@ INCOMING_EVENTS = frozenset({"live.transport.incoming", "live.call.incoming"})
 CALL_HEADER = "x-call-id"
 TOKEN_HEADER = "x-call-token"
 
+#: Characters per commentary append. The vendor's limit is 500 tokens; this stays well
+#: inside it for any language.
+APPEND_CHARS = 1200
+
+#: The most caller speech one delegation carries. A question is a sentence or two; the
+#: tail is what was just asked.
+QUESTION_CHARS = 600
+
+#: Opens a sideband. Injectable so tests never touch the network.
+Connector = Callable[[str, Mapping[str, str]], MediaChannel]
+
+
+def _ws_connect(url: str, headers: Mapping[str, str]) -> MediaChannel:
+    from nova.communications.ws import connect
+
+    return connect(url, headers)
+
+
+class LiveSideband:
+    """Answers one session's delegations until the session closes. Testable without a socket."""
+
+    def __init__(self, channel: MediaChannel, answer: Answerer) -> None:
+        self._channel = channel
+        self._answer = answer
+        self._heard = ""
+        self._ids = itertools.count(1)
+
+    def _send(self, kind: str, delegation_id: Optional[str], content: str) -> None:
+        self._channel.send(json.dumps({
+            "type": kind,
+            "event_id": f"evt_gw_{next(self._ids)}",
+            "delegation_id": delegation_id,
+            "content": content,
+        }))
+
+    def run(self) -> None:
+        while True:
+            try:
+                raw = self._channel.recv()
+            except EOFError:
+                return
+            try:
+                event = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            kind = event.get("type") if isinstance(event, dict) else None
+            if kind == "session.input_transcript.delta":
+                self._heard = (self._heard + str(event.get("delta") or ""))[-QUESTION_CHARS:]
+            elif kind == "session.delegation.created":
+                delegation_id = (event.get("delegation") or {}).get("id")
+                if delegation_id:
+                    self._delegate(str(delegation_id))
+            elif kind == "session.closed":
+                return
+            elif kind == "error":
+                log.warning("live sideband error: %s", (event.get("error") or {}).get("message"))
+
+    def _delegate(self, delegation_id: str) -> None:
+        question, self._heard = self._heard.strip(), ""
+        self._send("session.thinking.append", delegation_id, "Looking that up.")
+        try:
+            reply = self._answer(question) if question else ""
+        except Exception as exc:  # noqa: BLE001 — a failed lookup must not drop the call
+            log.warning("delegation lookup failed: %s", exc)
+            reply = ""
+        reply = reply or ("I could not find that. Offer to follow up in writing rather than guess.")
+        for start in range(0, len(reply), APPEND_CHARS):
+            self._send("session.commentary.append", delegation_id, reply[start:start + APPEND_CHARS])
+
 
 def sign(secret: str, message_id: str, timestamp: str, body: bytes) -> str:
     """A Standard Webhooks ``v1`` signature: HMAC-SHA256 over ``id.timestamp.body``."""
@@ -57,7 +135,7 @@ def sign(secret: str, message_id: str, timestamp: str, body: bytes) -> str:
     return base64.b64encode(hmac.new(key, signed, hashlib.sha256).digest()).decode("ascii")
 
 
-class OpenAILiveVoice(VoiceSessionProvider):
+class OpenAILiveVoice(SipVoiceEngine):
     id = "openai-live"
 
     def __init__(
@@ -70,6 +148,7 @@ class OpenAILiveVoice(VoiceSessionProvider):
         region: str = "us",
         base_url: str = DEFAULT_BASE_URL,
         transport: Transport = urllib_transport,
+        connector: Connector = _ws_connect,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if not (api_key and project_id.startswith("proj_") and webhook_secret):
@@ -85,6 +164,7 @@ class OpenAILiveVoice(VoiceSessionProvider):
         self._host = SIP_HOSTS[region]
         self._base = base_url.rstrip("/")
         self._transport = transport
+        self._connector = connector
         self._clock = clock
 
     @classmethod
@@ -96,7 +176,7 @@ class OpenAILiveVoice(VoiceSessionProvider):
             **options,
         )
 
-    def sip_target(self, call_id: str, token: str) -> SipTarget:
+    def bridge_target(self, call_id: str, token: str) -> SipTarget:
         return SipTarget(
             uri=f"sip:{self._project}@{self._host};transport=tls",
             headers={"X-Call-Id": call_id, "X-Call-Token": token},
@@ -154,19 +234,41 @@ class OpenAILiveVoice(VoiceSessionProvider):
         instructions = request.instructions
         if request.language:
             instructions = f"{instructions}\n\nSpeak in this language: {request.language}."
-        status, body = self._post(
-            f"{session_id}/accept",
-            {
-                "session": {
-                    "type": "live",
-                    "model": self._model,
-                    "instructions": instructions,
-                    "audio": {"output": {"voice": request.voice or DEFAULT_VOICE}},
-                }
-            },
-        )
+        session: dict = {
+            "type": "live",
+            "model": self._model,
+            "instructions": instructions,
+            "audio": {"output": {"voice": request.voice or DEFAULT_VOICE}},
+        }
+        if request.delegation:
+            session["delegation"] = {"type": "client"}
+        status, body = self._post(f"{session_id}/accept", {"session": session})
         if not 200 <= status < 300:
             raise ProviderError(f"OpenAI refused the session ({status}): {body[:200]!r}")
+
+    def attach(self, session_id: str, answer: Answerer) -> None:
+        """Serve delegations for an accepted session, on a background thread.
+
+        The connection opens on that thread, not here: this runs inside a webhook handler,
+        and a slow vendor handshake must not hold up other calls' webhooks. If it cannot
+        open, the call continues on its instructions alone and the failure is logged.
+        """
+        base = self._base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+        url = f"{base}/live/sessions/{session_id}/attach"
+        headers = {"Authorization": f"Bearer {self._key}"}
+
+        def serve() -> None:
+            try:
+                channel = self._connector(url, headers)
+            except Exception as exc:  # noqa: BLE001 — no sideband means no lookups, not no call
+                log.warning("live sideband for %s did not open: %s", session_id, exc)
+                return
+            try:
+                LiveSideband(channel, answer).run()
+            finally:
+                channel.close()
+
+        threading.Thread(target=serve, name=f"live-sideband-{session_id}", daemon=True).start()
 
     def reject(self, session_id: str) -> None:
         # 603 Decline. A competing decision already made is fine: either way, not connected.

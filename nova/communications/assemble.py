@@ -12,8 +12,14 @@ Variable                  Used for
 ``OPENAI_API_KEY``        GPT-Live voice engine
 ``OPENAI_PROJECT_ID``     GPT-Live SIP address (``proj_...``)
 ``OPENAI_WEBHOOK_SECRET`` verifies GPT-Live's webhooks (``whsec_...``)
-``CALL_BRIDGE_SECRET``    signs the call token carried across the SIP bridge (32+ chars)
+``DEEPGRAM_API_KEY``      cascaded engine: speech recognition
+``CARTESIA_API_KEY``      cascaded engine: speech synthesis
+``CASCADE_LLM_API_KEY``   cascaded engine: the reply model at ``cascade.llm_base_url``
+``CALL_BRIDGE_SECRET``    signs the call token carried across the bridge (32+ chars)
 ========================  ============================================================
+
+Non-secret settings — which reply model, which speech models — are in
+``communications.yaml``, never here.
 
 A provider the tenant allows but whose credentials are absent is left out, and
 :func:`missing_credentials` names what is missing — a call through it then fails with a
@@ -22,19 +28,29 @@ clear reason instead of the gateway refusing to start.
 
 from __future__ import annotations
 
-from typing import Mapping
+from pathlib import Path
+from typing import Mapping, Optional, Sequence
 
 from nova.audit import AuditLog
-from nova.communications.contracts import TelephonyProvider, VoiceSessionProvider
+from nova.communications.answers import index_search, knowledge_answerer
+from nova.communications.cascade import (
+    DEFAULT_CARTESIA_VERSION,
+    DEFAULT_STT_MODEL,
+    DEFAULT_TTS_MODEL,
+    ChatResponder,
+    DeepgramCartesiaVoice,
+)
+from nova.communications.contracts import TelephonyProvider, VoiceEngine
 from nova.communications.gateway import CallGateway
 from nova.communications.openai_live import OpenAILiveVoice
-from nova.communications.spec import CommunicationsSpec
+from nova.communications.spec import CASCADED_ENGINE, CommunicationsSpec
 from nova.communications.store import CommsStore
 from nova.communications.twilio import TwilioTelephony
 
 REQUIRED_ENV: Mapping[str, tuple[str, ...]] = {
     "twilio": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
     "openai-live": ("OPENAI_API_KEY", "OPENAI_PROJECT_ID", "OPENAI_WEBHOOK_SECRET"),
+    "deepgram-cartesia": ("DEEPGRAM_API_KEY", "CARTESIA_API_KEY", "CASCADE_LLM_API_KEY"),
 }
 SECRET_ENV = "CALL_BRIDGE_SECRET"
 
@@ -60,7 +76,15 @@ def build_gateway(
     audit: AuditLog,
     env: Mapping[str, str],
     public_url: str,
+    knowledge_index: Optional[Path] = None,
+    knowledge_grants: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> CallGateway:
+    """``public_url`` serves both listeners: HTTPS webhooks at its root, and the media
+    bridge at the same host over ``wss://`` under ``/media/``.
+
+    ``knowledge_index`` and ``knowledge_grants`` (agent id -> source ids, from the bundle)
+    enable mid-call lookups. Without them calls run on their instructions alone.
+    """
     base = public_url.rstrip("/")
     missing = missing_credentials(spec, env)
 
@@ -70,13 +94,39 @@ def build_gateway(
             env, answer_url=f"{base}/calls/twilio/answer", status_url=f"{base}/calls/twilio/status",
         )
 
-    voices: dict[str, VoiceSessionProvider] = {}
-    if "bridge" not in missing and "openai-live" in spec.voice_providers \
-            and "openai-live" not in missing:
-        voices["openai-live"] = OpenAILiveVoice.from_env(env)
+    voices: dict[str, VoiceEngine] = {}
+    if "bridge" not in missing:
+        if "openai-live" in spec.voice_providers and "openai-live" not in missing:
+            voices["openai-live"] = OpenAILiveVoice.from_env(env)
+        if CASCADED_ENGINE in spec.voice_providers and CASCADED_ENGINE not in missing:
+            cascade = spec.cascade
+            voices[CASCADED_ENGINE] = DeepgramCartesiaVoice(
+                deepgram_key=env["DEEPGRAM_API_KEY"],
+                cartesia_key=env["CARTESIA_API_KEY"],
+                responder=ChatResponder(base_url=cascade.llm_base_url,
+                                        api_key=env["CASCADE_LLM_API_KEY"],
+                                        model=cascade.llm_model),
+                media_url=base.replace("https://", "wss://", 1) + f"/media/{CASCADED_ENGINE}",
+                stt_model=cascade.stt_model or DEFAULT_STT_MODEL,
+                tts_model=cascade.tts_model or DEFAULT_TTS_MODEL,
+                cartesia_version=cascade.cartesia_version or DEFAULT_CARTESIA_VERSION,
+            )
+
+    answers = None
+    if knowledge_index is not None and knowledge_grants:
+        search = index_search(Path(knowledge_index))
+        grants = {agent: tuple(sources) for agent, sources in knowledge_grants.items()}
+
+        def answers(record):
+            sources = grants.get(record.agent, ())
+            if not sources:
+                return None
+            return knowledge_answerer(call_id=record.call_id, agent=record.agent,
+                                      sources=sources, search=search, audit=audit)
 
     return CallGateway(
         spec, store, audit, carriers,
         voices=voices,
         call_secret=env.get(SECRET_ENV, "").encode("utf-8") if voices else b"",
+        answers=answers,
     )

@@ -88,6 +88,10 @@ OPTIONAL_CAPABILITY_IMPORTS = {
     # Mirroring a knowledge corpus from S3. A deployment with no S3 corpus never calls it,
     # which is why boto3 is an extra rather than a dependency; the refusal names it.
     "nova/knowledge/origin.py": "boto3",
+    # Live call connections (the GPT-Live sideband, the cascaded engine's recogniser and
+    # synthesiser, the media bridge). The runtime already pins websockets; a deployment
+    # that never runs calls never reaches it, and the refusal names what to install.
+    "nova/communications/ws.py": "websockets",
 }
 
 
@@ -194,7 +198,10 @@ def test_every_optional_capability_has_a_degradation_proof():
     each capability is specific — "it still imports" is far too weak an obligation to
     generate. A new entry fails here until somebody writes its own degradation test.
     """
-    assert set(OPTIONAL_CAPABILITY_IMPORTS) == {"nova/knowledge/origin.py"}, (
+    assert set(OPTIONAL_CAPABILITY_IMPORTS) == {
+        "nova/knowledge/origin.py",
+        "nova/communications/ws.py",
+    }, (
         "a new optional capability dependency was declared; add a test proving that module "
         "still loads and still answers when the dependency is absent, then list it here"
     )
@@ -221,6 +228,29 @@ def test_s3_mirroring_degrades_instead_of_failing_without_boto3(tmp_path):
         "origin=Origin(kind='s3', bucket='b'))); "
         "assert not r.ok and 'boto3' in r.error, r.to_dict(); "
         "print('degraded cleanly')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
+    )
+    assert result.returncode == 0, result.stderr
+    assert "degraded cleanly" in result.stdout
+
+
+def test_live_calls_degrade_instead_of_failing_without_websockets():
+    """The obligation that pays for the websockets exemption.
+
+    With the package masked out, every communications module still imports, and opening a
+    live connection refuses with a message naming the package rather than an ImportError.
+    """
+    probe = (
+        "import sys; sys.modules['websockets'] = None; "
+        "import importlib; "
+        "[importlib.import_module(f'nova.communications.{m}') for m in "
+        "('ws', 'cascade', 'media', 'openai_live', 'assemble', 'gateway')]; "
+        "from nova.communications.ws import connect, WebSocketUnavailable; "
+        "\ntry:\n connect('wss://example.invalid', {})\n"
+        "except WebSocketUnavailable as exc:\n assert 'websockets' in str(exc), exc\n"
+        " print('degraded cleanly')"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT

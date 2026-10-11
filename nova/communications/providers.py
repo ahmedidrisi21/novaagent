@@ -105,12 +105,12 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         label="OpenAI GPT-Live",
         capabilities={
             "speech_to_speech": _vendor(True),
-            # Over SIP, delegation arrives on a sideband WebSocket this layer does not open
-            # yet, so on a phone call the model runs on its instructions alone.
+            # Delegations arrive on the sideband and are answered by a read-only knowledge
+            # lookup — "tools" here means looking things up, never acting.
             "tool_calls": Capability(
-                supported=False,
-                verification=Verification.SOURCE_READ,
-                note="not on phone calls yet: needs the sideband connection",
+                supported=True,
+                verification=Verification.LOCAL_VALIDATED,
+                note="read-only knowledge lookups over the sideband; no actions mid-call",
             ),
             "barge_in": _vendor(True),
             "native_phone": _tested(True),
@@ -154,15 +154,24 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         kind=Kind.VOICE,
         label="Cascaded: Deepgram STT, the agent, Cartesia TTS",
         capabilities={
-            "speech_to_speech": _vendor(False),
-            # The agent itself is the one talking, so it has every tool it is granted.
-            "tool_calls": _vendor(True),
-            "barge_in": _vendor(True, "speech detection cancels speech output"),
-            "native_phone": _vendor(False, "needs a media bridge from the carrier"),
+            "speech_to_speech": _tested(False),
+            # Lookups are read-only knowledge passages handed to the reply model per turn.
+            "tool_calls": Capability(
+                supported=True,
+                verification=Verification.LOCAL_VALIDATED,
+                note="read-only knowledge lookups per turn; no actions mid-call",
+            ),
+            "barge_in": _tested(True),
+            "native_phone": _tested(False),
             "audio_stays_in_tenant_cloud": _vendor(False),
-            "text_transcript": _vendor(True, "every turn is text first"),
+            "text_transcript": _tested(True),
         },
-        caveat="Slightly higher latency than a speech-to-speech engine; measure before choosing.",
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/cascade.py",
+        caveat=(
+            "Exercised against scripted stand-ins only; no live call has been placed. "
+            "Slightly higher latency than a speech-to-speech engine; measure before choosing."
+        ),
     ),
     # -- carriers ------------------------------------------------------------------------
     CommsProvider(
