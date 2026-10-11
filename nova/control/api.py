@@ -317,6 +317,8 @@ class ControlAPI:
             return self.automations()
         if tail == "/channels":
             return self.channels()
+        if tail == "/communications":
+            return self.communications()
         if tail.startswith("/agents/") and tail.endswith("/soul"):
             return self.agent_soul(tail[len("/agents/") : -len("/soul")])
         if tail.startswith("/agents/") and tail.endswith("/automations"):
@@ -778,6 +780,25 @@ class ControlAPI:
                 "declared": bool(self.bundle.channels),
                 "channel_delivery": self.runtime.capabilities.channel_delivery,
                 "channels": rows,
+                "catalogue": [p.to_dict() for p in catalogue()],
+            },
+        )
+
+    def communications(self) -> Response:
+        """Which agents may place calls, and what each voice engine and carrier can do.
+
+        No credential and no phone number of any contact: the tenant's own caller ids and
+        the per-agent grant, plus the provider catalogue with its evidence level per
+        capability, so "supported" is never shown without saying how anybody knows.
+        """
+        from nova.communications.providers import catalogue
+
+        spec = self.bundle.communications
+        return Response(
+            200,
+            {
+                "declared": spec.declared,
+                "settings": spec.to_dict(),
                 "catalogue": [p.to_dict() for p in catalogue()],
             },
         )
