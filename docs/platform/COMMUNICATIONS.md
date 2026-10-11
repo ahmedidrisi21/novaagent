@@ -145,23 +145,90 @@ gateway = build_gateway(bundle.communications, store=CommsStore(path, tenant_id=
 build_server(gateway, public_url="https://calls.example.com", port=8090).serve_forever()
 ```
 
-### Phase 2 limits, stated plainly
+## Live connections: lookups mid-call and the cascaded engine
 
-- **No tools on a phone call.** Over SIP, GPT-Live delegates through a sideband WebSocket.
-  This layer is standard library only and has no WebSocket client, so the voice model runs
-  on the purpose's instructions alone. It cannot look anything up or act mid-call.
-- **The cascaded engine (Deepgram + Cartesia) is not built.** It needs a media bridge that
-  streams call audio over WebSockets, which needs either a WebSocket dependency or a
-  hand-written client. That is a dependency decision for the platform owners, not something
-  to slip in.
-- **No `nova` CLI command yet** starts the listener; the snippet above is the entry point.
-- **Opt-outs spoken on a call are not captured** until transcripts arrive (Phase 4). The
-  purpose instructions should tell the voice to acknowledge and end the call.
+Both run over WebSockets, borrowed from the runtime's pinned `websockets` package through
+`ws.py`, the only module allowed to import it (registered in
+`tests/platform/test_boundaries.py`, with a test proving everything still imports and the
+refusal names the package when it is absent).
+
+### Mid-call lookups (both engines)
+
+Read-only, from the company knowledge the agent is granted (`agents/<id>.yaml`
+`knowledge.sources`), scoped in SQL by `nova/knowledge` exactly as the agent's own tool is.
+A hit is read out with its citation; no hit becomes an explicit "not found, offer to
+follow up in writing", so the voice never improvises a price or a policy. Every lookup is
+audited as `communications.knowledge.searched` with the question and the citations.
+
+- **GPT-Live:** the session is accepted with client delegation and `LiveSideband`
+  attaches to `wss://api.openai.com/v1/live/sessions/{id}/attach`. A delegation carries
+  no question text, so the question is what the caller said since the last delegation.
+  The answer is appended as commentary for the voice to paraphrase. The sideband
+  opens on a background thread, so a slow handshake never holds up other calls' webhooks;
+  if it cannot open, the call continues on its instructions alone and the failure is logged.
+- **Cascaded:** passages for each utterance are handed to the reply model as reference
+  data, with the rule to answer from them or say it cannot.
+
+Nothing said on a call can make the gateway act — write, send, or call. The one
+exception is an opt-out, below.
+
+### The cascaded engine (Deepgram + Cartesia)
+
+```
+Twilio <Connect><Stream>  ──audio (mu-law 8k)──▶  /media/deepgram-cartesia  ──▶  Deepgram
+   ▲                                                  │ start: call_id + token      │ finished utterance
+   │                                                  ▼ (proved like a SIP session) ▼
+   └──────── media / clear ◀── Cartesia (mu-law 8k) ◀── reply model (+ knowledge passages)
+```
+
+- **No transcoding:** Twilio, Deepgram and Cartesia all speak 8 kHz mu-law.
+- **Barge-in:** Deepgram's `SpeechStarted` cancels the reply at Cartesia and sends Twilio
+  `clear`, so the caller can interrupt.
+- **Spoken opt-outs are honoured on the call.** Every word is text first, so "stop calling
+  me" suppresses the contact for every agent at once, says goodbye, and hangs up.
+- **A failed reply model** apologises, says someone will follow up, and hangs up.
+- **Configuration:** `communications.cascade` names the reply model (any
+  OpenAI-compatible `/chat/completions` endpoint) and optional speech models; the agent's
+  `voice.voice` is the Cartesia voice id. Keys are `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`
+  and `CASCADE_LLM_API_KEY`, in the gateway's environment.
+
+```yaml
+communications:
+  voice_providers: [deepgram-cartesia, openai-live]
+  cascade:
+    llm_base_url: https://api.openai.com/v1
+    llm_model: gpt-4.1-mini
+  agents:
+    - agent: customer-support
+      voice: { primary: deepgram-cartesia, fallbacks: [openai-live], voice: "<cartesia voice id>" }
+```
+
+### Running both listeners
+
+```python
+gateway = build_gateway(bundle.communications, store=..., audit=..., env=os.environ,
+                        public_url="https://calls.example.com",
+                        knowledge_index=home / "knowledge.db",
+                        knowledge_grants=grants_by_agent(bundle.agents))
+build_server(gateway, public_url="https://calls.example.com", port=8090)   # webhooks
+build_media_server(gateway, port=8091)                                     # wss://…/media/
+```
+
+Route `https://calls.example.com/` to port 8090 and `wss://calls.example.com/media/` to
+port 8091 at the TLS proxy.
+
+### Limits, stated plainly
+
+- **No live call has been placed.** Every vendor is exercised against scripted stand-ins
+  speaking its documented messages; the catalogue says `local_validated`, not
+  `field_validated`. The first real call is the next step, and the place to measure latency.
+- **Lookups only, no actions mid-call.** Booking, emailing and CRM writes are post-call
+  actions (Phase 4), approved through policy.
+- **No `nova` CLI command yet** starts the listeners; the snippet above is the entry point.
 
 ## Not built yet, in the order it lands
 
-1. **Phase 2 remainder:** the cascaded engine and the GPT-Live sideband (both need a
-   WebSocket client: decision pending), and a CLI command for the listener.
+1. **Next:** a first live call on a test number, then a CLI command for the listeners.
 2. **Phase 3:** reconciliation for a call left in `initiated` with no carrier reference
    after a crash; live call monitor; recording with consent.
 3. **Phase 4:** the agent-facing `communications` toolset (request a call, read its status),

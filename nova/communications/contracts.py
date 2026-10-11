@@ -15,7 +15,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional, Union
 
 
 class CallStatus(str, Enum):
@@ -132,10 +132,22 @@ class ProviderEvent:
 
 @dataclass(frozen=True)
 class SipTarget:
-    """Where a carrier bridges an answered call, and the headers it must carry."""
+    """Bridge the call to a voice engine's SIP address, carrying these headers."""
 
     uri: str
     headers: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class StreamTarget:
+    """Stream the call's audio over a WebSocket to our own media bridge.
+
+    ``parameters`` reach the bridge in the stream's first message; they carry the call id
+    and its token, because the WebSocket URL alone proves nothing about which call it is.
+    """
+
+    url: str
+    parameters: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -149,7 +161,7 @@ class AnswerPlan:
     hang_up: bool = False
     say: str = ""
     language: str = ""
-    connect: Optional[SipTarget] = None
+    connect: Optional[Union[SipTarget, StreamTarget]] = None
 
 
 class ProviderError(Exception):
@@ -205,6 +217,14 @@ class VoiceSessionRequest:
     instructions: str
     voice: str = ""
     language: str = ""
+    #: Whether the engine may hand questions back to the gateway mid-call. Read-only
+    #: lookups only; nothing said on a call can make the gateway act.
+    delegation: bool = False
+
+
+#: Answers a question asked mid-call, from sources the agent is granted. Returns text the
+#: voice may paraphrase; never raises for "not found" — says so instead.
+Answerer = Callable[[str], str]
 
 
 @dataclass(frozen=True)
@@ -220,14 +240,19 @@ class IncomingSession:
     headers: Mapping[str, str] = field(default_factory=dict)
 
 
-class VoiceSessionProvider(ABC):
-    """A voice engine reached over SIP: the carrier bridges the call, the engine talks."""
+class VoiceEngine(ABC):
+    """Hears and speaks on an answered call. Two kinds, by how the audio reaches it."""
 
     id: str = ""
 
     @abstractmethod
-    def sip_target(self, call_id: str, token: str) -> SipTarget:
-        """Where the carrier should bridge this call, carrying the id and its token."""
+    def bridge_target(self, call_id: str, token: str) -> Union[SipTarget, StreamTarget]:
+        """Where the carrier should send this call, carrying its id and token."""
+
+
+class SipVoiceEngine(VoiceEngine):
+    """The carrier bridges the call straight to the vendor over SIP; the vendor then
+    announces the session by webhook and the gateway accepts or rejects it."""
 
     @abstractmethod
     def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
@@ -251,3 +276,45 @@ class VoiceSessionProvider(ABC):
     @abstractmethod
     def hang_up(self, session_id: str) -> None:
         """End a session. Must be safe to call twice."""
+
+    def attach(self, session_id: str, answer: Answerer) -> None:
+        """Serve mid-call questions for an accepted session. Engines without a side
+        channel do nothing: their sessions run on instructions alone."""
+
+
+class MediaChannel(ABC):
+    """One WebSocket, as the media bridge sees it. Real or scripted."""
+
+    @abstractmethod
+    def send(self, message: Union[str, bytes]) -> None: ...
+
+    @abstractmethod
+    def recv(self, timeout: Optional[float] = None) -> Union[str, bytes]:
+        """Next message. Raises ``EOFError`` when the other side has gone."""
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class CallHooks:
+    """What a stream engine may ask of the gateway during a call. Nothing else.
+
+    ``answer`` is a read-only lookup. ``opt_out`` records that the person asked not to be
+    called again — the one write a call may cause directly, because waiting until after
+    the call to honour it is how the next agent calls them anyway. ``end_call`` hangs up.
+    """
+
+    answer: Optional[Answerer] = None
+    opt_out: Optional[Callable[[str], None]] = None
+    end_call: Optional[Callable[[], None]] = None
+
+
+class StreamVoiceEngine(VoiceEngine):
+    """The carrier streams the call's audio to our media bridge, and this engine runs the
+    conversation over it. The bridge has already proved which call it is."""
+
+    @abstractmethod
+    def converse(self, media: MediaChannel, stream_sid: str, request: VoiceSessionRequest,
+                 hooks: CallHooks) -> None:
+        """Run the call until the stream ends. Blocks."""

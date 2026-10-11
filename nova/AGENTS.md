@@ -78,14 +78,18 @@ the registry, and the Hermes adapter), `audit/`, `apply.py`, `cli.py`. See
 to extend it.
 
 `communications/` is the phone-call gate and carrier seam: who may call whom, for what, one
-dial per request, approval bound to the exact call, plus the Twilio and GPT-Live adapters
-and the internet-facing webhook listener (never the Control API). Read
+dial per request, approval bound to the exact call, plus the Twilio, GPT-Live and cascaded
+Deepgram + Cartesia adapters, read-only knowledge lookups mid-call, and the internet-facing
+webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.
 
 Dependencies are the standard library and PyYAML. **Do not add a third.** The layer must
 import and test without the runtime installed; `tests/platform/test_boundaries.py`
-enforces it.
+enforces it. Two modules may *lazily* borrow a package the deployment already has, each
+listed in `OPTIONAL_CAPABILITY_IMPORTS` with a test proving it degrades with a message:
+`knowledge/origin.py` (boto3) and `communications/ws.py` (the runtime's pinned
+`websockets`). Every other module reaches WebSockets through `ws.py`, never directly.
 
 ## Never name the package `platform/`
 

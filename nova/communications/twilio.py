@@ -29,6 +29,7 @@ from nova.communications.contracts import (
     PlaceCall,
     ProviderError,
     ProviderEvent,
+    StreamTarget,
     TelephonyProvider,
 )
 from nova.communications.http import Transport, urllib_transport
@@ -223,8 +224,17 @@ class TwilioTelephony(TelephonyProvider):
             if plan.say:
                 language = f" language={quoteattr(plan.language)}" if plan.language else ""
                 parts.append(f"<Say{language}>{escape(plan.say)}</Say>")
-            query = urllib.parse.urlencode(dict(plan.connect.headers))
-            uri = f"{plan.connect.uri}?{query}" if query else plan.connect.uri
-            parts.append(f"<Dial><Sip>{escape(uri)}</Sip></Dial>")
+            if isinstance(plan.connect, StreamTarget):
+                params = "".join(
+                    f"<Parameter name={quoteattr(name)} value={quoteattr(value)}/>"
+                    for name, value in plan.connect.parameters.items()
+                )
+                parts.append(
+                    f"<Connect><Stream url={quoteattr(plan.connect.url)}>{params}</Stream></Connect>"
+                )
+            else:
+                query = urllib.parse.urlencode(dict(plan.connect.headers))
+                uri = f"{plan.connect.uri}?{query}" if query else plan.connect.uri
+                parts.append(f"<Dial><Sip>{escape(uri)}</Sip></Dial>")
         parts.append("</Response>")
         return "text/xml", "".join(parts).encode("utf-8")

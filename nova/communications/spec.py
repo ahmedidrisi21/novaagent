@@ -121,6 +121,24 @@ class CallingProfile:
 
 
 @dataclass(frozen=True)
+class CascadeSpec:
+    """The cascaded engine's reply model and speech models. Keys live with the gateway."""
+
+    llm_base_url: str = ""
+    llm_model: str = ""
+    stt_model: str = ""
+    tts_model: str = ""
+    cartesia_version: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if v}
+
+
+#: The engine whose voice names a Cartesia voice id and whose replies need a model.
+CASCADED_ENGINE = "deepgram-cartesia"
+
+
+@dataclass(frozen=True)
 class CommunicationsSpec:
     voice_providers: tuple[str, ...] = ()
     telephony_providers: tuple[str, ...] = ()
@@ -133,6 +151,7 @@ class CommunicationsSpec:
     allow_test_providers: bool = False
     #: Spoken by the carrier, word for word, before any model is on the line.
     disclosure: str = ""
+    cascade: CascadeSpec = field(default_factory=CascadeSpec)
 
     @property
     def declared(self) -> bool:
@@ -152,6 +171,7 @@ class CommunicationsSpec:
             "calling_hours": {"start": _fmt(self.window_start), "end": _fmt(self.window_end)},
             "allow_test_providers": self.allow_test_providers,
             "disclosure": self.disclosure,
+            "cascade": self.cascade.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -239,6 +259,8 @@ def _profile(doc: Doc, index: int, spec_so_far: Mapping[str, Any]) -> CallingPro
         voice=voice_doc.str_("voice"),
     )
     voice_doc.reject_unknown()
+    if CASCADED_ENGINE in voice.ordered and not voice.voice:
+        raise fail("voice.voice", f"is required with {CASCADED_ENGINE!r}: the Cartesia voice id")
     for engine in voice.ordered:
         if engine not in spec_so_far["voice_providers"]:
             raise fail("voice", f"{engine!r} is not in this tenant's voice_providers")
@@ -349,7 +371,28 @@ def parse_communications(
             )
         profiles.append(profile)
     disclosure = doc.str_("disclosure")
+    cascade = CascadeSpec()
+    cascade_doc = doc.child("cascade")
+    if cascade_doc is not None:
+        cascade = CascadeSpec(
+            llm_base_url=cascade_doc.str_("llm_base_url"),
+            llm_model=cascade_doc.str_("llm_model"),
+            stt_model=cascade_doc.str_("stt_model"),
+            tts_model=cascade_doc.str_("tts_model"),
+            cartesia_version=cascade_doc.str_("cartesia_version"),
+        )
+        cascade_doc.reject_unknown()
     doc.reject_unknown()
+    if CASCADED_ENGINE in voice and not (cascade.llm_base_url and cascade.llm_model):
+        raise SpecError(
+            f"{CASCADED_ENGINE!r} needs cascade.llm_base_url and cascade.llm_model — the "
+            "model that writes the agent's replies",
+            field="communications.cascade",
+            source=source,
+        )
+    if cascade.llm_base_url and not cascade.llm_base_url.startswith("https://"):
+        raise SpecError("must be an https:// URL", field="communications.cascade.llm_base_url",
+                        source=source)
     if profiles and not disclosure:
         raise SpecError(
             "is required once any agent may call — the words spoken before the agent, "
@@ -368,6 +411,7 @@ def parse_communications(
         profiles=tuple(profiles),
         allow_test_providers=allow_test,
         disclosure=disclosure,
+        cascade=cascade,
     )
 
 

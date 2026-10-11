@@ -14,8 +14,8 @@ from nova.communications.contracts import (
     PlaceCall,
     ProviderError,
     ProviderEvent,
+    SipVoiceEngine,
     TelephonyProvider,
-    VoiceSessionProvider,
     VoiceSessionRequest,
 )
 from nova.communications.gate import CallDecision, CallFacts, Contact, decide_call
@@ -61,7 +61,7 @@ __all__ = [
     "Purpose",
     "TelephonyProvider",
     "VoiceChoice",
-    "VoiceSessionProvider",
+    "SipVoiceEngine",
     "VoiceSessionRequest",
     "catalogue",
     "decide_call",

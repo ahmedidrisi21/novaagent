@@ -22,8 +22,9 @@ from nova.communications.contracts import (
     ProviderError,
     ProviderEvent,
     SipTarget,
+    SipVoiceEngine,
+    StreamTarget,
     TelephonyProvider,
-    VoiceSessionProvider,
     VoiceSessionRequest,
 )
 
@@ -84,7 +85,11 @@ class MockTelephony(TelephonyProvider):
     def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
         out: dict[str, Any] = {"hang_up": plan.hang_up or plan.connect is None}
         if not out["hang_up"]:
-            out.update(say=plan.say, uri=plan.connect.uri, headers=dict(plan.connect.headers))
+            out["say"] = plan.say
+            if isinstance(plan.connect, StreamTarget):
+                out.update(stream=plan.connect.url, parameters=dict(plan.connect.parameters))
+            else:
+                out.update(uri=plan.connect.uri, headers=dict(plan.connect.headers))
         return "application/json", json.dumps(out, sort_keys=True).encode("utf-8")
 
     def callback(
@@ -101,7 +106,7 @@ class MockTelephony(TelephonyProvider):
         return {SIGNATURE_HEADER: _sign(self._secret, body)}, body
 
 
-class MockVoice(VoiceSessionProvider):
+class MockVoice(SipVoiceEngine):
     id = "mock-voice"
 
     def __init__(self, *, secret: bytes = b"mock-voice-secret") -> None:
@@ -109,9 +114,10 @@ class MockVoice(VoiceSessionProvider):
         self.accepted: dict[str, VoiceSessionRequest] = {}
         self.rejected: list[str] = []
         self.hung_up: list[str] = []
+        self.attached: dict[str, object] = {}
         self.fail_next = False
 
-    def sip_target(self, call_id: str, token: str) -> SipTarget:
+    def bridge_target(self, call_id: str, token: str) -> SipTarget:
         return SipTarget("sip:agent@voice.test", {"X-Call-Id": call_id, "X-Call-Token": token})
 
     def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
@@ -138,6 +144,9 @@ class MockVoice(VoiceSessionProvider):
 
     def reject(self, session_id: str) -> None:
         self.rejected.append(session_id)
+
+    def attach(self, session_id: str, answer) -> None:
+        self.attached[session_id] = answer
 
     def hang_up(self, session_id: str) -> None:
         if session_id not in self.hung_up:

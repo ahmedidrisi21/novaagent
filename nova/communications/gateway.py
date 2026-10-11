@@ -28,14 +28,18 @@ from typing import Callable, Mapping, Optional
 
 from nova.audit import AuditLog, new_correlation_id
 from nova.communications.contracts import (
+    Answerer,
     AnswerPlan,
+    CallHooks,
     CallStatus,
     FailureReason,
     PlaceCall,
     ProviderError,
     ProviderEvent,
+    SipVoiceEngine,
+    StreamVoiceEngine,
     TelephonyProvider,
-    VoiceSessionProvider,
+    VoiceEngine,
     VoiceSessionRequest,
 )
 from nova.communications.gate import (
@@ -88,8 +92,9 @@ class CallGateway:
         audit: AuditLog,
         carriers: Mapping[str, TelephonyProvider],
         *,
-        voices: Optional[Mapping[str, VoiceSessionProvider]] = None,
+        voices: Optional[Mapping[str, VoiceEngine]] = None,
         call_secret: bytes = b"",
+        answers: Optional[Callable[[CallRecord], Optional[Answerer]]] = None,
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         if audit.tenant_id != store.tenant_id:
@@ -102,6 +107,9 @@ class CallGateway:
         self.carriers = dict(carriers)
         self.voices = dict(voices or {})
         self._secret = call_secret
+        #: Builds the read-only answerer for a call, or None when the agent has no
+        #: knowledge to consult. Absent means calls run on their instructions alone.
+        self._answers = answers
         self._clock = clock
 
     def call_token(self, call_id: str) -> str:
@@ -395,19 +403,44 @@ class CallGateway:
         plan = AnswerPlan(
             say=self.spec.disclosure,
             language=profile.voice.language,
-            connect=self.voices[engine].sip_target(record.call_id, self.call_token(record.call_id)),
+            connect=self.voices[engine].bridge_target(record.call_id, self.call_token(record.call_id)),
         )
         self.audit.record("communications.call.answered", correlation_id=correlation,
                           subject=record.call_id, detail={"voice_engine": engine})
         return AnswerResponse(200, *carrier.render_answer(plan))
 
-    # -- voice engine webhooks ----------------------------------------------------------
+    # -- voice sessions -----------------------------------------------------------------
+
+    def _proves(self, record: Optional[CallRecord], call_id: str, token: str, engine_id: str) -> bool:
+        """Whether a claimed session is the one this call is waiting for."""
+        return (
+            record is not None
+            and hmac.compare_digest(token, self.call_token(call_id))
+            and record.status is CallStatus.ANSWERED
+            and record.voice_engine == engine_id
+        )
+
+    def _session_request(self, record: CallRecord, *, delegation: bool) -> VoiceSessionRequest:
+        profile = self.spec.profile(record.agent)
+        purpose = self.spec.purposes.get(record.purpose)
+        return VoiceSessionRequest(
+            call_id=record.call_id,
+            tenant_id=self.store.tenant_id,
+            agent=record.agent,
+            instructions=(purpose.instructions or purpose.description) if purpose else "",
+            voice=profile.voice.voice if profile else "",
+            language=profile.voice.language if profile else "",
+            delegation=delegation,
+        )
+
+    def _answerer(self, record: CallRecord) -> Optional[Answerer]:
+        return self._answers(record) if self._answers is not None else None
 
     def voice_event(self, engine_id: str, *, headers: Mapping[str, str], body: bytes) -> IngestResult:
-        """A voice engine announces a bridged call. Accept it only for the call it proves."""
+        """A SIP voice engine announces a bridged call. Accept it only for the call it proves."""
         voice = self.voices.get(engine_id)
-        if voice is None:
-            return IngestResult("rejected", f"no {engine_id!r} adapter", http_status=404)
+        if not isinstance(voice, SipVoiceEngine):
+            return IngestResult("rejected", f"no {engine_id!r} SIP adapter", http_status=404)
         if not voice.verify(headers, body):
             self.audit.record(
                 "communications.callback.unverified", correlation_id=new_correlation_id(),
@@ -425,12 +458,7 @@ class CallGateway:
         token = incoming.headers.get("x-call-token", "")
         record = self.store.call(call_id) if call_id else None
         correlation = new_correlation_id()
-        if (
-            record is None
-            or not hmac.compare_digest(token, self.call_token(call_id))
-            or record.status is not CallStatus.ANSWERED
-            or record.voice_engine != engine_id
-        ):
+        if not self._proves(record, call_id, token, engine_id):
             voice.reject(incoming.session_id)
             self.audit.record(
                 "communications.voice.rejected", correlation_id=correlation,
@@ -450,18 +478,10 @@ class CallGateway:
             voice.reject(incoming.session_id)
             return IngestResult("ignored", "the call already has a voice session", call_id)
 
-        profile = self.spec.profile(record.agent)
-        purpose = self.spec.purposes.get(record.purpose)
-        request = VoiceSessionRequest(
-            call_id=call_id,
-            tenant_id=self.store.tenant_id,
-            agent=record.agent,
-            instructions=(purpose.instructions or purpose.description) if purpose else "",
-            voice=profile.voice.voice if profile else "",
-            language=profile.voice.language if profile else "",
-        )
+        answer = self._answerer(record)
         try:
-            voice.accept(incoming.session_id, request)
+            voice.accept(incoming.session_id,
+                         self._session_request(record, delegation=answer is not None))
         except ProviderError as exc:
             self.store.advance(call_id, CallStatus.FAILED, at=_iso(self._clock()),
                                failure=FailureReason.PROVIDER_FAILURE, reason=str(exc))
@@ -472,9 +492,48 @@ class CallGateway:
 
         self.store.advance(call_id, CallStatus.SESSION_CONNECTED, at=_iso(self._clock()))
         self.store.mark_applied(engine_id, incoming.event_id)
+        if answer is not None:
+            voice.attach(incoming.session_id, answer)
         self.audit.record("communications.call.session_connected", correlation_id=correlation,
-                          subject=call_id, detail={"voice_engine": engine_id})
+                          subject=call_id,
+                          detail={"voice_engine": engine_id, "knowledge": answer is not None})
         return IngestResult("applied", call_id=call_id)
+
+    def stream_started(
+        self, engine_id: str, *, call_id: str, token: str, stream_sid: str
+    ) -> Optional[tuple[StreamVoiceEngine, VoiceSessionRequest, CallHooks]]:
+        """The media bridge received a stream claiming a call. What to run it with, or None.
+
+        Same proof as a SIP session: the token, an answered call, the engine chosen at
+        answer time, and no session bound yet.
+        """
+        voice = self.voices.get(engine_id)
+        record = self.store.call(call_id) if call_id else None
+        correlation = new_correlation_id()
+        if not isinstance(voice, StreamVoiceEngine) or not self._proves(
+            record, call_id, token, engine_id
+        ) or not self.store.claim_session(call_id, engine=engine_id, session_id=stream_sid,
+                                          at=_iso(self._clock())):
+            self.audit.record(
+                "communications.voice.rejected", correlation_id=correlation,
+                subject=stream_sid, detail={"claimed_call": call_id, "engine": engine_id},
+            )
+            return None
+
+        self.store.advance(call_id, CallStatus.SESSION_CONNECTED, at=_iso(self._clock()))
+        answer = self._answerer(record)
+        hooks = CallHooks(
+            answer=answer,
+            opt_out=lambda said: self.opt_out(
+                record.contact_id, reason="asked on the call not to be called again",
+                source=f"call:{call_id}",
+            ),
+            end_call=lambda: self._end_quietly(self.store.call(call_id)),
+        )
+        self.audit.record("communications.call.session_connected", correlation_id=correlation,
+                          subject=call_id,
+                          detail={"voice_engine": engine_id, "knowledge": answer is not None})
+        return voice, self._session_request(record, delegation=answer is not None), hooks
 
     def _end_quietly(self, record: CallRecord) -> None:
         """Hang up the phone leg after the engine failed, so the person is not left in silence."""
