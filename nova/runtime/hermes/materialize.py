@@ -80,6 +80,11 @@ KNOWLEDGE_ENTRY = Path(__file__).parent / "knowledge_tool.py"
 #: the same reason: one definition of how a question becomes a safe FTS5 expression.
 KNOWLEDGE_QUERY = Path(__file__).parents[2] / "knowledge" / "query.py"
 
+#: The calling plugin, installed only for agents whose tenant lets them request calls.
+CALLING_PLUGIN_NAME = "nova-calling"
+CALLING_MANIFEST = Path(__file__).parent / "calling_manifest.yaml"
+CALLING_ENTRY = Path(__file__).parent / "calling_tool.py"
+
 
 @dataclass(frozen=True)
 class Provenance:
@@ -234,7 +239,7 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str
     return out
 
 
-def plugins_section(*, policy: bool, knowledge: bool) -> dict[str, Any]:
+def plugins_section(*, policy: bool, knowledge: bool, calling: bool = False) -> dict[str, Any]:
     """The ``plugins`` block enabling the plugins NOVA installed for this agent.
 
     **Installing a plugin does not activate it.** The runtime's loader is opt-in —
@@ -254,7 +259,8 @@ def plugins_section(*, policy: bool, knowledge: bool) -> dict[str, Any]:
     refusal is better than omitting the key and inheriting whatever the default becomes.
     """
     enabled = [name for name, wanted in (
-        (POLICY_PLUGIN_NAME, policy), (KNOWLEDGE_PLUGIN_NAME, knowledge)
+        (POLICY_PLUGIN_NAME, policy), (KNOWLEDGE_PLUGIN_NAME, knowledge),
+        (CALLING_PLUGIN_NAME, calling),
     ) if wanted]
     if not enabled:
         return {}
@@ -304,6 +310,7 @@ def build_config(
     knowledge: bool = False,
     provider: Optional[ProviderSpec] = None,
     runtime_config: Optional[Mapping[str, Any]] = None,
+    calling: bool = False,
 ) -> dict[str, Any]:
     """The runtime ``config.yaml`` body for one agent.
 
@@ -317,7 +324,7 @@ def build_config(
     """
     config: dict[str, Any] = {}
 
-    section = plugins_section(policy=policy, knowledge=knowledge)
+    section = plugins_section(policy=policy, knowledge=knowledge, calling=calling)
     servers, granted_plugins, _ = extension_sections(spec)
     if granted_plugins:
         # MERGED, never replaced. ``section`` carries the enable for NOVA's own policy and
@@ -621,6 +628,7 @@ def plan_writes(
     provider: Optional[ProviderSpec] = None,
     runtime_config: Optional[Mapping[str, Any]] = None,
     tenant_id: str = "",
+    calling: Optional[dict[str, Any]] = None,
 ) -> dict[Path, str]:
     """Every file this materialization would write, as path -> content.
 
@@ -634,6 +642,7 @@ def plan_writes(
             knowledge=bool(knowledge),
             provider=provider,
             runtime_config=runtime_config,
+            calling=bool(calling),
         ),
         sort_keys=True,
         default_flow_style=False,
@@ -644,7 +653,7 @@ def plan_writes(
         # The recorded digest must cover everything materialization depends on, policy
         # included, or a re-apply compares against a digest it can never match and
         # reports every agent as changed forever.
-        digest=_combined_digest(spec, policy, knowledge),
+        digest=_combined_digest(spec, policy, knowledge, calling),
         nova_version=_nova_version(),
         # Deliberately not part of the digest: the tenant is who owns the profile, not
         # what the agent is. Putting it in the digest would re-materialize every agent on
@@ -679,6 +688,16 @@ def plan_writes(
         writes[knowledge_dir / "__init__.py"] = KNOWLEDGE_ENTRY.read_text(encoding="utf-8")
         writes[knowledge_dir / "_query.py"] = KNOWLEDGE_QUERY.read_text(encoding="utf-8")
 
+    # The calling tools, only for an agent its tenant lets request calls. The grant file
+    # holds this agent's signing key and nothing about any other agent.
+    if calling:
+        calling_dir = paths.calling_plugin_dir(spec.id)
+        writes[paths.calling_config_path(spec.id)] = (
+            json.dumps(calling, indent=2, sort_keys=True) + "\n"
+        )
+        writes[calling_dir / "plugin.yaml"] = CALLING_MANIFEST.read_text(encoding="utf-8")
+        writes[calling_dir / "__init__.py"] = CALLING_ENTRY.read_text(encoding="utf-8")
+
     return writes
 
 
@@ -699,6 +718,7 @@ def materialize(
     runtime_config: Optional[Mapping[str, Any]] = None,
     tenant_id: str = "",
     dry_run: bool = False,
+    calling: Optional[dict[str, Any]] = None,
 ) -> MaterializeResult:
     """Create or update one agent's profile. Idempotent.
 
@@ -724,9 +744,10 @@ def materialize(
     created = not profile_dir.exists()
     # The policy is part of what an agent IS, so it belongs in the identity that decides
     # whether a re-apply is a change. A policy edit with an unchanged spec must rewrite.
-    digest = _combined_digest(spec, policy, knowledge)
+    digest = _combined_digest(spec, policy, knowledge, calling)
     writes = plan_writes(
-        spec, paths, identity, policy, knowledge, provider, runtime_config, tenant_id
+        spec, paths, identity, policy, knowledge, provider, runtime_config, tenant_id,
+        calling=calling,
     )
 
     # An unstamped marker must be rewritten even when nothing else changed, or adoption
@@ -787,6 +808,7 @@ def _combined_digest(
     spec: AgentSpec,
     policy: Optional[CompiledPolicy],
     knowledge: Optional[dict[str, Any]] = None,
+    calling: Optional[dict[str, Any]] = None,
 ) -> str:
     """Delegates to the one shared definition; see :func:`nova.policy.agent_digest`."""
-    return agent_digest(spec, policy, knowledge)
+    return agent_digest(spec, policy, knowledge, calling)

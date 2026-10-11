@@ -118,6 +118,7 @@ def _open(args, runtime_factory):
 
     bundle = load_bundle(args.bundle)
     runtime = runtime_factory(bundle.tenant_id)
+    args.calls_runtime = runtime
     store = CommsStore(runtime.calls_store_path, tenant_id=bundle.tenant_id)
     audit = AuditLog.for_home(runtime.state_location, tenant_id=bundle.tenant_id,
                               actor=f"nova-calls:{_actor(args)}")
@@ -329,11 +330,23 @@ def _serve(args, bundle, gateway, public_url) -> int:
     print(f"webhooks on {args.host}:{args.port} for {public_url}; "
           f"carriers: {', '.join(gateway.carriers) or 'none'}; "
           f"voices: {', '.join(gateway.voices) or 'none'}")
+    from nova.communications.inbox import master_key, process, refresh
+
+    runtime = args.calls_runtime
+    inbox, master = runtime.calls_inbox_path, master_key(runtime.state_location)
+    next_sweep = 0.0
     try:
         while True:
-            for change in sweep(gateway):
-                print(f"reconciled {change.call_id}: {change.before} -> {change.after} ({change.note})")
-            time.sleep(max(5, args.sweep_every))
+            # Agents' requests every couple of seconds; reconciliation on its own, slower beat.
+            for result in process(gateway, inbox, master):
+                print(f"agent request {result['request_id']}: {result['status']}")
+            refresh(gateway, inbox)
+            if time.monotonic() >= next_sweep:
+                for change in sweep(gateway):
+                    print(f"reconciled {change.call_id}: {change.before} -> {change.after} "
+                          f"({change.note})")
+                next_sweep = time.monotonic() + max(5, args.sweep_every)
+            time.sleep(2)
     except KeyboardInterrupt:
         return 0
     finally:

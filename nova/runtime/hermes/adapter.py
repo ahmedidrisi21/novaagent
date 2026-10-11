@@ -133,6 +133,7 @@ class HermesRuntime(AgentRuntime):
         knowledge: Optional[KnowledgeCatalog] = None,
         deployment: Optional[DeploymentSpec] = None,
         dry_run: bool = False,
+        calling: Optional[dict] = None,
     ) -> MaterializeResult:
         deployment = deployment or DeploymentSpec()
         resolved = deployment.provider.merged_with(spec.model.deployment)
@@ -150,6 +151,7 @@ class HermesRuntime(AgentRuntime):
             # incident, and a plain record() carries no intent/commit pair.
             result = _materialize.materialize(
                 spec, self.paths, identity=identity, policy=policy, knowledge=grant,
+                calling=calling,
                 provider=resolved, runtime_config=runtime_config,
                 tenant_id=self.tenant_id, dry_run=True,
             )
@@ -178,6 +180,7 @@ class HermesRuntime(AgentRuntime):
         ) as outcome:
             result = _materialize.materialize(
                 spec, self.paths, identity=identity, policy=policy, knowledge=grant,
+                calling=calling,
                 provider=resolved, runtime_config=runtime_config,
                 tenant_id=self.tenant_id, dry_run=False,
             )
@@ -348,14 +351,18 @@ class HermesRuntime(AgentRuntime):
         *,
         policy: Optional[CompiledPolicy] = None,
         knowledge: Optional[KnowledgeCatalog] = None,
+        communications=None,
     ) -> str:
         """As the contract, plus this agent's resolved knowledge grant.
 
         The grant is resolved rather than taken from the spec because the corpus titles the
         tool description carries come from the tenant catalog, not from the agent.
         """
+        from nova.communications.inbox import calling_identity
+
         grant = _materialize.build_knowledge_config(spec, self.paths, knowledge)
-        return _materialize._combined_digest(spec, policy, grant)
+        return _materialize._combined_digest(spec, policy, grant,
+                                             calling_identity(communications, spec.id))
 
     def list_agents(self) -> list[MaterializedAgent]:
         profiles_dir = self.paths.profiles_dir
