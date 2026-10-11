@@ -77,6 +77,11 @@ the registry, and the Hermes adapter), `audit/`, `apply.py`, `cli.py`. See
 `docs/platform/PHASE_1.md` for what each does, what it deliberately does not do, and how
 to extend it.
 
+`communications/` is the phone-call gate and carrier seam: who may call whom, for what, one
+dial per request, approval bound to the exact call. No real carrier is wired yet; read
+`docs/platform/COMMUNICATIONS.md` before adding one — every adapter must pass
+`test_carrier_contract`.
+
 Dependencies are the standard library and PyYAML. **Do not add a third.** The layer must
 import and test without the runtime installed; `tests/platform/test_boundaries.py`
 enforces it.

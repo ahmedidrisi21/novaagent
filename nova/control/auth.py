@@ -75,6 +75,9 @@ ROUTE_ROLES: Mapping[str, str] = {
     "/policy/simulate": "admin",
     "/decisions": "admin",
     "/budget": "admin",
+    # Which agents may phone whom, for what, from which number. A grant to act in the
+    # world, so it is governance like /policy, not operational state.
+    "/communications": "admin",
 }
 
 #: Minimum role per *write* route, kept separate from :data:`ROUTE_ROLES` on purpose.

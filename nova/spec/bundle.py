@@ -30,6 +30,8 @@ import yaml
 from nova.errors import SpecError
 from nova.knowledge.sources import KnowledgeCatalog, load_catalog
 from nova.channels.spec import check_agents_exist, load_channels
+from nova.communications.spec import CommunicationsSpec, load_communications
+from nova.communications.spec import check_agents_exist as check_callers_exist
 from nova.spec.deployment import DeploymentSpec, load_deployment
 from nova.spec.automation import load_automations
 from nova.spec.objective import ObjectiveSpec, load_objectives
@@ -83,6 +85,8 @@ class TenantBundle:
     #: Recurring work, declared so it is reviewable and bounded by its agent's policy.
     #: Empty is the common case; a tenant with no schedules has none.
     automations: tuple = ()
+    #: Which agents may place phone calls, to whom and why. Empty means none may.
+    communications: CommunicationsSpec = field(default_factory=CommunicationsSpec)
 
     @property
     def tenant_id(self) -> str:
@@ -109,20 +113,20 @@ class TenantBundle:
 
     def digest(self) -> str:
         """Content hash of the whole bundle — every agent plus identity and org."""
-        canonical = json.dumps(
-            {
-                "organization": self.organization.to_dict(),
-                "identity": self.identity.to_dict(),
-                "policy": self.policy.to_dict() if self.policy else None,
-                "knowledge": self.knowledge.to_dict(),
-                "objectives": [spec.to_dict() for spec in self.objectives],
-                "deployment": self.deployment.to_dict(),
-                "channels": [c.to_dict() for c in self.channels],
-                "agents": [spec.to_dict() for spec in sorted(self.agents, key=lambda s: s.id)],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        content = {
+            "organization": self.organization.to_dict(),
+            "identity": self.identity.to_dict(),
+            "policy": self.policy.to_dict() if self.policy else None,
+            "knowledge": self.knowledge.to_dict(),
+            "objectives": [spec.to_dict() for spec in self.objectives],
+            "deployment": self.deployment.to_dict(),
+            "channels": [c.to_dict() for c in self.channels],
+            "agents": [spec.to_dict() for spec in sorted(self.agents, key=lambda s: s.id)],
+        }
+        # Only when declared, so a tenant that never touches calling keeps its digest.
+        if self.communications.declared:
+            content["communications"] = self.communications.to_dict()
+        canonical = json.dumps(content, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
@@ -136,6 +140,7 @@ class TenantBundle:
             "objectives": [spec.to_dict() for spec in self.objectives],
             "deployment": self.deployment.to_dict(),
             "channels": [c.to_dict() for c in self.channels],
+            "communications": self.communications.to_dict(),
             "agents": [spec.to_dict() for spec in self.agents],
         }
 
@@ -173,6 +178,7 @@ def load_bundle(root: Path | str, *, env: Optional[Mapping[str, str]] = None) ->
     automations = load_automations(root, env=env)
     deployment = load_deployment(root, env=env)
     channels = load_channels(root, env=env)
+    communications = load_communications(root, env=env)
 
     agents = _load_agents(root, env=env)
     _check_cross_references(agents, identity)
@@ -185,6 +191,7 @@ def load_bundle(root: Path | str, *, env: Optional[Mapping[str, str]] = None) ->
     # A channel granting an agent this bundle does not contain is almost always a rename
     # that left the grant behind — and a grant with nobody to use it survives review.
     check_agents_exist(channels, [spec.id for spec in agents])
+    check_callers_exist(communications, [spec.id for spec in agents])
 
     from nova.automations.compile import check_automation_references
 
@@ -199,6 +206,7 @@ def load_bundle(root: Path | str, *, env: Optional[Mapping[str, str]] = None) ->
         deployment=deployment,
         channels=channels,
         automations=automations,
+        communications=communications,
     )
     # Automations compile against the whole bundle — agent, policy grants, catalog,
     # channel grants — so this runs last and fails the load rather than letting a

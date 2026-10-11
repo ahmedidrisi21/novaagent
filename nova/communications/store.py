@@ -1,0 +1,375 @@
+"""Durable call state: contacts, consent, suppressions, calls and carrier events.
+
+SQLite from the standard library, one file per tenant, and every query also filtered by
+tenant id — the file boundary is the first wall, the column is the second, and a test
+asserts the second holds even when two tenants share a file.
+
+Three uniqueness rules carry the safety properties, so they are constraints rather than
+checks in Python that a race could slip past:
+
+* ``(tenant_id, idempotency_key)`` — a retried request finds the call it already made.
+* ``(provider, provider_event_id)`` — a webhook delivered twice is applied once.
+* the dial claim — a call moves into ``initiated`` by one conditional UPDATE, so two
+  approvals arriving together dial once.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional
+
+from nova.communications.contracts import (
+    ACTIVE,
+    CallStatus,
+    FailureReason,
+    advances,
+)
+from nova.communications.gate import Contact
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS contacts (
+    tenant_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT '',
+    groups_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (tenant_id, contact_id)
+);
+CREATE TABLE IF NOT EXISTS consents (
+    tenant_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, contact_id, kind)
+);
+CREATE TABLE IF NOT EXISTS suppressions (
+    tenant_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, contact_id)
+);
+CREATE TABLE IF NOT EXISTS calls (
+    call_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    task_id TEXT NOT NULL DEFAULT '',
+    telephony TEXT NOT NULL,
+    action_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    failure TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    provider_call_ref TEXT NOT NULL DEFAULT '',
+    approved_by TEXT NOT NULL DEFAULT '',
+    -- Set once, by the dial claim. Daily caps count this, not the request time.
+    dialled_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS calls_by_agent ON calls (tenant_id, agent, status);
+CREATE INDEX IF NOT EXISTS calls_by_ref ON calls (telephony, provider_call_ref);
+CREATE TABLE IF NOT EXISTS call_events (
+    provider TEXT NOT NULL,
+    provider_event_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    applied INTEGER NOT NULL DEFAULT 0,
+    received_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, provider, provider_event_id)
+);
+"""
+
+
+@dataclass(frozen=True)
+class CallRecord:
+    call_id: str
+    tenant_id: str
+    idempotency_key: str
+    agent: str
+    contact_id: str
+    purpose: str
+    task_id: str
+    telephony: str
+    action_digest: str
+    status: CallStatus
+    failure: str
+    reason: str
+    provider_call_ref: str
+    approved_by: str
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "call_id": self.call_id,
+            "agent": self.agent,
+            "contact_id": self.contact_id,
+            "purpose": self.purpose,
+            "task_id": self.task_id,
+            "telephony": self.telephony,
+            "status": self.status.value,
+            "failure": self.failure,
+            "reason": self.reason,
+            "approved_by": self.approved_by,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+_CALL_COLUMNS = (
+    "call_id, tenant_id, idempotency_key, agent, contact_id, purpose, task_id, telephony, "
+    "action_digest, status, failure, reason, provider_call_ref, approved_by, created_at, "
+    "updated_at"
+)
+
+
+def _call(row: Optional[tuple]) -> Optional[CallRecord]:
+    if row is None:
+        return None
+    values = list(row)
+    values[9] = CallStatus(values[9])
+    return CallRecord(*values)
+
+
+class CommsStore:
+    def __init__(self, path: Path | str, *, tenant_id: str) -> None:
+        self.path = Path(path)
+        self.tenant_id = tenant_id
+        self._lock = threading.Lock()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(
+            str(self.path), isolation_level=None, check_same_thread=False, timeout=30
+        )
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.executescript(_SCHEMA)
+
+    def close(self) -> None:
+        self._db.close()
+
+    def _one(self, sql: str, *args: Any) -> Optional[tuple]:
+        with self._lock:
+            return self._db.execute(sql, args).fetchone()
+
+    def _write(self, sql: str, *args: Any) -> int:
+        with self._lock:
+            return self._db.execute(sql, args).rowcount
+
+    # -- contacts, consent, suppression -------------------------------------------------
+
+    def put_contact(self, contact: Contact) -> None:
+        self._write(
+            "INSERT INTO contacts (tenant_id, contact_id, phone, timezone, groups_json) "
+            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, contact_id) DO UPDATE SET "
+            "phone = excluded.phone, timezone = excluded.timezone, "
+            "groups_json = excluded.groups_json",
+            self.tenant_id, contact.contact_id, contact.phone, contact.timezone,
+            json.dumps(list(contact.groups)),
+        )
+
+    def contact(self, contact_id: str) -> Optional[Contact]:
+        row = self._one(
+            "SELECT contact_id, phone, timezone, groups_json FROM contacts "
+            "WHERE tenant_id = ? AND contact_id = ?",
+            self.tenant_id, contact_id,
+        )
+        if row is None:
+            return None
+        return Contact(row[0], row[1], row[2], tuple(json.loads(row[3])))
+
+    def grant_consent(self, contact_id: str, kind: str, *, evidence: str, at: str) -> None:
+        """Record consent. ``evidence`` says where it came from — a form id, a call id."""
+        if not evidence:
+            raise ValueError("consent without evidence is not consent")
+        self._write(
+            "INSERT OR REPLACE INTO consents (tenant_id, contact_id, kind, granted_at, evidence) "
+            "VALUES (?, ?, ?, ?, ?)",
+            self.tenant_id, contact_id, kind, at, evidence,
+        )
+
+    def revoke_consent(self, contact_id: str, kind: str) -> None:
+        self._write(
+            "DELETE FROM consents WHERE tenant_id = ? AND contact_id = ? AND kind = ?",
+            self.tenant_id, contact_id, kind,
+        )
+
+    def consents(self, contact_id: str) -> frozenset[str]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT kind FROM consents WHERE tenant_id = ? AND contact_id = ?",
+                (self.tenant_id, contact_id),
+            ).fetchall()
+        return frozenset(row[0] for row in rows)
+
+    def suppress(self, contact_id: str, *, reason: str, at: str) -> None:
+        self._write(
+            "INSERT OR IGNORE INTO suppressions (tenant_id, contact_id, reason, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            self.tenant_id, contact_id, reason, at,
+        )
+
+    def is_suppressed(self, contact_id: str) -> bool:
+        return self._one(
+            "SELECT 1 FROM suppressions WHERE tenant_id = ? AND contact_id = ?",
+            self.tenant_id, contact_id,
+        ) is not None
+
+    # -- calls --------------------------------------------------------------------------
+
+    def create_call(
+        self,
+        *,
+        idempotency_key: str,
+        agent: str,
+        contact_id: str,
+        purpose: str,
+        task_id: str,
+        telephony: str,
+        action_digest: str,
+        status: CallStatus,
+        reason: str,
+        at: str,
+    ) -> tuple[CallRecord, bool]:
+        """Insert a call, or return the one this key already made. ``(record, created)``."""
+        call_id = uuid.uuid4().hex
+        try:
+            self._write(
+                f"INSERT INTO calls ({_CALL_COLUMNS}) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', '', ?, ?)",
+                call_id, self.tenant_id, idempotency_key, agent, contact_id, purpose,
+                task_id, telephony, action_digest, status.value, reason, at, at,
+            )
+        except sqlite3.IntegrityError:
+            existing = self._one(
+                f"SELECT {_CALL_COLUMNS} FROM calls WHERE tenant_id = ? AND idempotency_key = ?",
+                self.tenant_id, idempotency_key,
+            )
+            return _call(existing), False
+        return self.call(call_id), True
+
+    def call(self, call_id: str) -> Optional[CallRecord]:
+        return _call(self._one(
+            f"SELECT {_CALL_COLUMNS} FROM calls WHERE tenant_id = ? AND call_id = ?",
+            self.tenant_id, call_id,
+        ))
+
+    def call_by_ref(self, telephony: str, provider_call_ref: str) -> Optional[CallRecord]:
+        if not provider_call_ref:
+            return None
+        return _call(self._one(
+            f"SELECT {_CALL_COLUMNS} FROM calls "
+            "WHERE tenant_id = ? AND telephony = ? AND provider_call_ref = ?",
+            self.tenant_id, telephony, provider_call_ref,
+        ))
+
+    def claim_for_dial(self, call_id: str, *, approved_by: str, at: str) -> bool:
+        """Move a call into ``initiated`` exactly once. False means someone else did."""
+        return self._write(
+            "UPDATE calls SET status = ?, approved_by = ?, dialled_at = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ? AND status IN (?, ?)",
+            CallStatus.INITIATED.value, approved_by, at, at, self.tenant_id, call_id,
+            CallStatus.REQUESTED.value, CallStatus.APPROVAL_REQUIRED.value,
+        ) == 1
+
+    def set_provider_ref(self, call_id: str, ref: str, *, at: str) -> None:
+        self._write(
+            "UPDATE calls SET provider_call_ref = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ?",
+            ref, at, self.tenant_id, call_id,
+        )
+
+    def advance(
+        self,
+        call_id: str,
+        status: CallStatus,
+        *,
+        at: str,
+        failure: Optional[FailureReason] = None,
+        reason: str = "",
+    ) -> bool:
+        """Move a call forward. Returns False, changing nothing, if it would not advance."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT status FROM calls WHERE tenant_id = ? AND call_id = ?",
+                    (self.tenant_id, call_id),
+                ).fetchone()
+                if row is None or not advances(CallStatus(row[0]), status):
+                    self._db.execute("ROLLBACK")
+                    return False
+                self._db.execute(
+                    "UPDATE calls SET status = ?, failure = ?, "
+                    "reason = CASE WHEN ? = '' THEN reason ELSE ? END, updated_at = ? "
+                    "WHERE tenant_id = ? AND call_id = ?",
+                    (status.value, failure.value if failure else "", reason, reason, at,
+                     self.tenant_id, call_id),
+                )
+                self._db.execute("COMMIT")
+                return True
+            except BaseException:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def count_active(self, agent: str) -> int:
+        statuses = [s.value for s in ACTIVE]
+        marks = ", ".join("?" for _ in statuses)
+        row = self._one(
+            f"SELECT COUNT(*) FROM calls WHERE tenant_id = ? AND agent = ? AND status IN ({marks})",
+            self.tenant_id, agent, *statuses,
+        )
+        return int(row[0])
+
+    def count_dialled_since(self, agent: str, since: str) -> int:
+        """Calls handed to a carrier since ``since``. Refused, pending and rejected ones never were."""
+        row = self._one(
+            "SELECT COUNT(*) FROM calls WHERE tenant_id = ? AND agent = ? AND dialled_at != '' "
+            "AND dialled_at >= ?",
+            self.tenant_id, agent, since,
+        )
+        return int(row[0])
+
+    def completed_before(self, agent: str, contact_id: str) -> bool:
+        return self._one(
+            "SELECT 1 FROM calls WHERE tenant_id = ? AND agent = ? AND contact_id = ? "
+            "AND status = ? LIMIT 1",
+            self.tenant_id, agent, contact_id, CallStatus.COMPLETED.value,
+        ) is not None
+
+    # -- carrier events -----------------------------------------------------------------
+
+    def record_event(
+        self, *, provider: str, provider_event_id: str, call_id: str, status: CallStatus, at: str
+    ) -> bool:
+        """Remember a carrier event before acting on it. False means it was seen before.
+
+        Written first, so a crash after this line leaves an event that is never applied
+        twice; a missed status is recovered by reconciling with the carrier, a doubled
+        side effect is not recoverable at all.
+        """
+        try:
+            self._write(
+                "INSERT INTO call_events (provider, provider_event_id, tenant_id, call_id, "
+                "status, received_at) VALUES (?, ?, ?, ?, ?, ?)",
+                provider, provider_event_id, self.tenant_id, call_id, status.value, at,
+            )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def mark_applied(self, provider: str, provider_event_id: str) -> None:
+        self._write(
+            "UPDATE call_events SET applied = 1 "
+            "WHERE tenant_id = ? AND provider = ? AND provider_event_id = ?",
+            self.tenant_id, provider, provider_event_id,
+        )
