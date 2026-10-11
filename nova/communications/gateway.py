@@ -20,6 +20,7 @@ agent's profile after the request voids the approval instead of riding it.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,11 +28,15 @@ from typing import Callable, Mapping, Optional
 
 from nova.audit import AuditLog, new_correlation_id
 from nova.communications.contracts import (
+    AnswerPlan,
     CallStatus,
     FailureReason,
     PlaceCall,
     ProviderError,
+    ProviderEvent,
     TelephonyProvider,
+    VoiceSessionProvider,
+    VoiceSessionRequest,
 )
 from nova.communications.gate import (
     ALLOW,
@@ -63,6 +68,16 @@ class IngestResult:
     outcome: str
     reason: str = ""
     call_id: str = ""
+    #: What to answer the sender: 403 for a bad signature, 400 for anything else
+    #: rejected. A carrier that gets a 2xx stops retrying, which is right for a duplicate.
+    http_status: int = 200
+
+
+@dataclass(frozen=True)
+class AnswerResponse:
+    http_status: int
+    content_type: str = "text/plain"
+    body: bytes = b""
 
 
 class CallGateway:
@@ -73,15 +88,31 @@ class CallGateway:
         audit: AuditLog,
         carriers: Mapping[str, TelephonyProvider],
         *,
+        voices: Optional[Mapping[str, VoiceSessionProvider]] = None,
+        call_secret: bytes = b"",
         clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
         if audit.tenant_id != store.tenant_id:
             raise ValueError("the audit log and the store belong to different tenants")
+        if voices and len(call_secret) < 16:
+            raise ValueError("bridging to a voice engine needs a call secret of 16+ bytes")
         self.spec = spec
         self.store = store
         self.audit = audit
         self.carriers = dict(carriers)
+        self.voices = dict(voices or {})
+        self._secret = call_secret
         self._clock = clock
+
+    def call_token(self, call_id: str) -> str:
+        """Proof, carried in the SIP bridge, that a voice session belongs to this call.
+
+        SIP headers are caller-controlled: anyone who can reach the voice engine's SIP
+        address can claim any call id. Only someone holding the gateway's secret can
+        produce the token that goes with it.
+        """
+        message = f"{self.store.tenant_id}:{call_id}".encode("utf-8")
+        return hmac.new(self._secret, message, hashlib.sha256).hexdigest()[:32]
 
     # -- requests -----------------------------------------------------------------------
 
@@ -261,26 +292,38 @@ class CallGateway:
 
     # -- carrier callbacks --------------------------------------------------------------
 
-    def ingest(
-        self, carrier_id: str, *, headers: Mapping[str, str], body: bytes, url: str = ""
-    ) -> IngestResult:
+    def _find(self, carrier: TelephonyProvider, event: ProviderEvent) -> Optional[CallRecord]:
+        record = self.store.call_by_ref(carrier.id, event.provider_call_ref)
+        if record is None and event.call_id_hint:
+            record = self.store.call_for_carrier(carrier.id, event.call_id_hint, event.provider_call_ref)
+        return record
+
+    def _read(self, carrier_id: str, headers: Mapping[str, str], body: bytes, url: str):
+        """Verify and parse a carrier request. ``(carrier, event, None)`` or ``(.., error)``."""
         carrier = self.carriers.get(carrier_id)
         if carrier is None:
-            return IngestResult("rejected", f"no {carrier_id!r} adapter is configured")
+            return None, None, IngestResult("rejected", f"no {carrier_id!r} adapter", http_status=404)
         if not carrier.verify(headers, body, url):
             self.audit.record(
                 "communications.callback.unverified", correlation_id=new_correlation_id(),
                 subject=carrier_id, detail={"bytes": len(body)},
             )
-            return IngestResult("rejected", "signature did not verify")
+            return carrier, None, IngestResult("rejected", "signature did not verify", http_status=403)
         try:
-            event = carrier.normalize(json.loads(body.decode("utf-8")))
-        except (ValueError, UnicodeDecodeError) as exc:
-            return IngestResult("rejected", f"unreadable callback: {exc}")
+            return carrier, carrier.parse(headers, body, url), None
+        except ValueError as exc:
+            return carrier, None, IngestResult("rejected", f"unreadable callback: {exc}", http_status=400)
 
-        record = self.store.call_by_ref(carrier.id, event.provider_call_ref)
+    def ingest(
+        self, carrier_id: str, *, headers: Mapping[str, str], body: bytes, url: str = ""
+    ) -> IngestResult:
+        carrier, event, error = self._read(carrier_id, headers, body, url)
+        if error is not None:
+            return error
+
+        record = self._find(carrier, event)
         if record is None:
-            return IngestResult("rejected", "no call in this tenant has that carrier reference")
+            return IngestResult("rejected", "no call in this tenant matches", http_status=400)
 
         if not self.store.record_event(
             provider=carrier.id, provider_event_id=event.provider_event_id,
@@ -299,3 +342,147 @@ class CallGateway:
                     "failure": event.failure.value if event.failure else ""},
         )
         return IngestResult("applied", call_id=record.call_id)
+
+    def answer(
+        self, carrier_id: str, *, headers: Mapping[str, str], body: bytes, url: str = ""
+    ) -> AnswerResponse:
+        """The carrier asks what to do with an answered call. Every doubt hangs up."""
+        carrier, event, error = self._read(carrier_id, headers, body, url)
+        if error is not None:
+            return AnswerResponse(error.http_status, body=error.reason.encode("utf-8"))
+
+        def hang_up() -> AnswerResponse:
+            return AnswerResponse(200, *carrier.render_answer(AnswerPlan(hang_up=True)))
+
+        record = self._find(carrier, event)
+        if record is None:
+            return hang_up()
+        now = _iso(self._clock())
+        self.store.record_event(
+            provider=carrier.id, provider_event_id=event.provider_event_id,
+            call_id=record.call_id, status=event.status, at=now,
+        )
+        correlation = new_correlation_id()
+
+        if event.failure is FailureReason.MACHINE_DETECTED:
+            self.store.advance(record.call_id, CallStatus.FAILED, at=now,
+                               failure=FailureReason.MACHINE_DETECTED,
+                               reason="answered by a machine; nothing was said")
+            self.audit.record("communications.call.machine", correlation_id=correlation,
+                              subject=record.call_id, detail=dict(event.detail))
+            return hang_up()
+
+        self.store.advance(record.call_id, CallStatus.ANSWERED, at=now)
+        record = self.store.call(record.call_id)
+        profile = self.spec.profile(record.agent)
+        if record.status is not CallStatus.ANSWERED or profile is None:
+            # Ended, cancelled, or already bridged. Never put a second engine on a line.
+            return hang_up()
+
+        engine = record.voice_engine or next(
+            (e for e in profile.voice.ordered if e in self.voices), ""
+        )
+        if not engine:
+            reason = "no voice engine this agent may use is configured"
+            self.store.advance(record.call_id, CallStatus.FAILED, at=now,
+                               failure=FailureReason.PROVIDER_FAILURE, reason=reason)
+            self.audit.record("communications.call.failed", correlation_id=correlation,
+                              subject=record.call_id, error=reason)
+            return hang_up()
+        if not record.voice_engine:
+            self.store.set_voice(record.call_id, engine=engine, at=now)
+
+        plan = AnswerPlan(
+            say=self.spec.disclosure,
+            language=profile.voice.language,
+            connect=self.voices[engine].sip_target(record.call_id, self.call_token(record.call_id)),
+        )
+        self.audit.record("communications.call.answered", correlation_id=correlation,
+                          subject=record.call_id, detail={"voice_engine": engine})
+        return AnswerResponse(200, *carrier.render_answer(plan))
+
+    # -- voice engine webhooks ----------------------------------------------------------
+
+    def voice_event(self, engine_id: str, *, headers: Mapping[str, str], body: bytes) -> IngestResult:
+        """A voice engine announces a bridged call. Accept it only for the call it proves."""
+        voice = self.voices.get(engine_id)
+        if voice is None:
+            return IngestResult("rejected", f"no {engine_id!r} adapter", http_status=404)
+        if not voice.verify(headers, body):
+            self.audit.record(
+                "communications.callback.unverified", correlation_id=new_correlation_id(),
+                subject=engine_id, detail={"bytes": len(body)},
+            )
+            return IngestResult("rejected", "signature did not verify", http_status=403)
+        try:
+            incoming = voice.parse_incoming(headers, body)
+        except ValueError as exc:
+            return IngestResult("rejected", f"unreadable webhook: {exc}", http_status=400)
+        if incoming is None:
+            return IngestResult("ignored", "not an incoming session")
+
+        call_id = incoming.headers.get("x-call-id", "")
+        token = incoming.headers.get("x-call-token", "")
+        record = self.store.call(call_id) if call_id else None
+        correlation = new_correlation_id()
+        if (
+            record is None
+            or not hmac.compare_digest(token, self.call_token(call_id))
+            or record.status is not CallStatus.ANSWERED
+            or record.voice_engine != engine_id
+        ):
+            voice.reject(incoming.session_id)
+            self.audit.record(
+                "communications.voice.rejected", correlation_id=correlation,
+                subject=incoming.session_id, detail={"claimed_call": call_id},
+            )
+            return IngestResult("rejected", "the session does not prove a call awaiting it",
+                                call_id, http_status=200)
+
+        now = _iso(self._clock())
+        if not self.store.record_event(
+            provider=engine_id, provider_event_id=incoming.event_id, call_id=call_id,
+            status=CallStatus.SESSION_CONNECTED, at=now,
+        ):
+            return IngestResult("ignored", "duplicate delivery", call_id)
+        if not self.store.claim_session(call_id, engine=engine_id,
+                                        session_id=incoming.session_id, at=now):
+            voice.reject(incoming.session_id)
+            return IngestResult("ignored", "the call already has a voice session", call_id)
+
+        profile = self.spec.profile(record.agent)
+        purpose = self.spec.purposes.get(record.purpose)
+        request = VoiceSessionRequest(
+            call_id=call_id,
+            tenant_id=self.store.tenant_id,
+            agent=record.agent,
+            instructions=(purpose.instructions or purpose.description) if purpose else "",
+            voice=profile.voice.voice if profile else "",
+            language=profile.voice.language if profile else "",
+        )
+        try:
+            voice.accept(incoming.session_id, request)
+        except ProviderError as exc:
+            self.store.advance(call_id, CallStatus.FAILED, at=_iso(self._clock()),
+                               failure=FailureReason.PROVIDER_FAILURE, reason=str(exc))
+            self.audit.record("communications.call.failed", correlation_id=correlation,
+                              subject=call_id, error=str(exc))
+            self._end_quietly(record)
+            return IngestResult("rejected", str(exc), call_id, http_status=200)
+
+        self.store.advance(call_id, CallStatus.SESSION_CONNECTED, at=_iso(self._clock()))
+        self.store.mark_applied(engine_id, incoming.event_id)
+        self.audit.record("communications.call.session_connected", correlation_id=correlation,
+                          subject=call_id, detail={"voice_engine": engine_id})
+        return IngestResult("applied", call_id=call_id)
+
+    def _end_quietly(self, record: CallRecord) -> None:
+        """Hang up the phone leg after the engine failed, so the person is not left in silence."""
+        carrier = self.carriers.get(record.telephony)
+        if carrier is None or not record.provider_call_ref:
+            return
+        try:
+            carrier.end_call(record.provider_call_ref)
+        except ProviderError as exc:
+            self.audit.record("communications.call.end_failed", correlation_id=new_correlation_id(),
+                              subject=record.call_id, error=str(exc))

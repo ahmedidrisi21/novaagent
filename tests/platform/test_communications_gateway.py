@@ -34,6 +34,7 @@ NOON_UTC = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
 SPEC = {
     "communications": {
         "allow_test_providers": True,
+        "disclosure": "Hi, this is an AI assistant calling for Acme.",
         "voice_providers": ["mock-voice"],
         "telephony_providers": ["mock-telephony"],
         "caller_ids": ["+15555550100"],
@@ -262,12 +263,12 @@ def test_carrier_contract(make):
     headers, body = carrier.callback(ref, CallStatus.ANSWERED, event_id="e1")
     assert carrier.verify(headers, body, "")
     assert not carrier.verify(headers, body + b" ", "")
-    event = carrier.normalize(json.loads(body))
+    event = carrier.parse(headers, body, "")
     assert (event.provider, event.provider_call_ref, event.status) == (
         carrier.id, ref, CallStatus.ANSWERED,
     )
     with pytest.raises(ValueError):
-        carrier.normalize({"nonsense": True})
+        carrier.parse({}, b"nonsense", "")
 
     carrier.end_call(ref)
     carrier.end_call(ref)  # hanging up twice is not an error

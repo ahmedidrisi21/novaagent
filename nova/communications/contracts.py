@@ -108,7 +108,7 @@ class PlaceCall:
     to_number: str
     from_number: str
     max_seconds: int
-    #: Ask the carrier to detect a voicemail greeting before connecting the voice engine.
+    #: Ask the carrier to detect a voicemail greeting before anything is said.
     detect_machine: bool = True
 
 
@@ -124,7 +124,32 @@ class ProviderEvent:
     status: CallStatus
     occurred_at: str = ""
     failure: Optional[FailureReason] = None
+    #: Our own call id, when the carrier echoes it back on a signed URL. Finds the call
+    #: for a callback that beats the carrier reference into the store.
+    call_id_hint: str = ""
     detail: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SipTarget:
+    """Where a carrier bridges an answered call, and the headers it must carry."""
+
+    uri: str
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AnswerPlan:
+    """What happens the moment a call is answered, in carrier-neutral terms.
+
+    ``say`` is the tenant's disclosure, spoken by the carrier before any model is on the
+    line — so the words are the tenant's, every time, and never paraphrased.
+    """
+
+    hang_up: bool = False
+    say: str = ""
+    language: str = ""
+    connect: Optional[SipTarget] = None
 
 
 class ProviderError(Exception):
@@ -151,39 +176,78 @@ class TelephonyProvider(ABC):
 
     @abstractmethod
     def verify(self, headers: Mapping[str, str], body: bytes, url: str) -> bool:
-        """Whether a callback really came from this carrier. False means drop it."""
+        """Whether a callback really came from this carrier. False means drop it.
+
+        ``url`` is the exact URL the carrier called, query string included: carriers sign
+        it, and a URL rebuilt from parts will not match.
+        """
 
     @abstractmethod
-    def normalize(self, payload: Mapping[str, Any]) -> ProviderEvent:
-        """Translate a verified callback into the shared vocabulary.
-
-        Raises ``ValueError`` for a payload it does not understand; the gateway records
-        and drops it rather than guessing a status.
+    def parse(self, headers: Mapping[str, str], body: bytes, url: str) -> ProviderEvent:
+        """Translate a verified callback — a status update or the answer request — into
+        the shared vocabulary. A machine-answered call is ``FAILED`` with
+        ``MACHINE_DETECTED``. Raises ``ValueError`` for a body it does not understand;
+        the gateway drops it rather than guessing a status.
         """
+
+    @abstractmethod
+    def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
+        """The carrier's own reply to its answer request: ``(content_type, body)``."""
 
 
 @dataclass(frozen=True)
 class VoiceSessionRequest:
-    """What a voice engine is given for one call. No credential and no raw phone number."""
+    """What a voice engine is given for one call. No credential and no phone number."""
 
     call_id: str
     tenant_id: str
     agent: str
+    instructions: str
     voice: str = ""
     language: str = ""
-    #: Opaque reference to the call's purpose and context, resolved server side.
-    context_ref: str = ""
+
+
+@dataclass(frozen=True)
+class IncomingSession:
+    """A voice engine announcing a bridged call, after verification and parsing.
+
+    ``headers`` are the SIP headers the carrier forwarded. They are **claims**: the
+    gateway checks the call token in them before believing which call this is.
+    """
+
+    session_id: str
+    event_id: str
+    headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class VoiceSessionProvider(ABC):
-    """A voice engine adapter."""
+    """A voice engine reached over SIP: the carrier bridges the call, the engine talks."""
 
     id: str = ""
 
     @abstractmethod
-    def open_session(self, request: VoiceSessionRequest) -> str:
-        """Start a session for an answered call. Returns the engine's session id."""
+    def sip_target(self, call_id: str, token: str) -> SipTarget:
+        """Where the carrier should bridge this call, carrying the id and its token."""
 
     @abstractmethod
-    def close_session(self, session_id: str) -> None:
+    def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
+        """Whether a webhook really came from this engine."""
+
+    @abstractmethod
+    def parse_incoming(self, headers: Mapping[str, str], body: bytes) -> Optional[IncomingSession]:
+        """A verified webhook as an incoming session, or None for an event that is not one.
+
+        Raises ``ValueError`` for a body it cannot read.
+        """
+
+    @abstractmethod
+    def accept(self, session_id: str, request: VoiceSessionRequest) -> None:
+        """Take the call with these instructions. Raises :class:`ProviderError`."""
+
+    @abstractmethod
+    def reject(self, session_id: str) -> None:
+        """Refuse a session the gateway does not recognise."""
+
+    @abstractmethod
+    def hang_up(self, session_id: str) -> None:
         """End a session. Must be safe to call twice."""

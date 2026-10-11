@@ -1,4 +1,4 @@
-# Communications — Phase 1: the call gate and the carrier seam
+# Communications — the call gate, the carrier seam, and the first real adapters
 
 An agent can now *ask* to phone a contact, and NOVA decides whether that call may happen,
 dials it once, and tracks it to the end through duplicate and out-of-order carrier callbacks.
@@ -87,13 +87,83 @@ communications:
 `recording:` is refused until consent capture and pause/resume exist; accepting it now would
 be a setting that does nothing.
 
+## Phase 2: Twilio, GPT-Live, voicemail detection, disclosure
+
+A call now runs end to end against real vendor APIs, exercised against scripted stand-ins
+for each vendor (no live call has been placed yet).
+
+```
+agent request ─▶ gate ─▶ Twilio dials (MachineDetection, TimeLimit)
+                               │ answered
+                               ▼
+            POST /calls/twilio/answer ── machine? ──▶ <Hangup/>, call FAILED machine_detected
+                               │ person
+                               ▼
+            <Say>disclosure</Say><Dial><Sip>sip:proj_…@sip.api.openai.com
+                                       ?X-Call-Id=…&X-Call-Token=…</Sip></Dial>
+                               │
+                               ▼
+            POST /voice/openai-live/events (live.transport.incoming, signed)
+                 token checks out, call ANSWERED, no session yet ──▶ accept(instructions, voice)
+                 anything else ──▶ reject
+```
+
+| Piece | File |
+|---|---|
+| Twilio carrier | `twilio.py`: REST dial, status mapping, `AnsweredBy` → machine, TwiML |
+| GPT-Live voice engine | `openai_live.py`: SIP target, Standard Webhooks verification, accept/reject/hang-up |
+| Webhook listener | `webhooks.py`: `/calls/<carrier>/answer`, `/calls/<carrier>/status`, `/voice/<engine>/events` |
+| Assembly | `assemble.py`: builds the gateway from the **gateway process's** environment |
+
+- **The disclosure is the carrier's, not the model's.** `communications.disclosure` is
+  required once any agent may call, and Twilio speaks it word for word before the bridge.
+- **A voicemail greeting hears nothing.** Any `machine_*` or `fax` answer hangs up and
+  records `machine_detected`. `unknown` is treated as a person: people who answer and stay
+  silent are common.
+- **A voice session must prove its call.** SIP headers are caller-controlled, so the bridge
+  carries an HMAC token over the call id (`CALL_BRIDGE_SECRET`). The gateway accepts a
+  session only when the token matches, the call is `answered`, the engine is the one chosen
+  at answer time, and no session is bound yet. That last check is a conditional UPDATE, so
+  simultaneous webhooks bind one session.
+- **Signatures are checked against the vendors' own test vectors** (Twilio's validator
+  tests; the Standard Webhooks example), so the adapters cannot pass by agreeing with
+  themselves.
+- **The listener is not the Control API.** It is internet-facing and authenticates by
+  signature, so it runs as its own server behind a TLS proxy; its `public_url` is what
+  signatures are checked against.
+
+### Running it
+
+Configure Twilio's number and OpenAI's webhook to point at `<public_url>/calls/twilio/...`
+and `<public_url>/voice/openai-live/events`, set the variables listed in `assemble.py` in
+the gateway's environment (never an agent's), then:
+
+```python
+gateway = build_gateway(bundle.communications, store=CommsStore(path, tenant_id=tenant),
+                        audit=AuditLog.for_home(home, tenant_id=tenant),
+                        env=os.environ, public_url="https://calls.example.com")
+build_server(gateway, public_url="https://calls.example.com", port=8090).serve_forever()
+```
+
+### Phase 2 limits, stated plainly
+
+- **No tools on a phone call.** Over SIP, GPT-Live delegates through a sideband WebSocket.
+  This layer is standard library only and has no WebSocket client, so the voice model runs
+  on the purpose's instructions alone. It cannot look anything up or act mid-call.
+- **The cascaded engine (Deepgram + Cartesia) is not built.** It needs a media bridge that
+  streams call audio over WebSockets, which needs either a WebSocket dependency or a
+  hand-written client. That is a dependency decision for the platform owners, not something
+  to slip in.
+- **No `nova` CLI command yet** starts the listener; the snippet above is the entry point.
+- **Opt-outs spoken on a call are not captured** until transcripts arrive (Phase 4). The
+  purpose instructions should tell the voice to acknowledge and end the call.
+
 ## Not built yet, in the order it lands
 
-1. **Phase 2:** a Twilio adapter and the GPT-Live and cascaded voice adapters, each passing
-   `test_carrier_contract`; answering-machine detection; the disclosure line at call start.
+1. **Phase 2 remainder:** the cascaded engine and the GPT-Live sideband (both need a
+   WebSocket client: decision pending), and a CLI command for the listener.
 2. **Phase 3:** reconciliation for a call left in `initiated` with no carrier reference
-   after a crash, and for a callback that arrives before the reference is stored; webhook
-   endpoint in the gateway; live call monitor; recording with consent.
+   after a crash; live call monitor; recording with consent.
 3. **Phase 4:** the agent-facing `communications` toolset (request a call, read its status),
    added per session from the calling profile, never through an environment variable;
    transcripts, extraction and post-call actions.

@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS calls (
     approved_by TEXT NOT NULL DEFAULT '',
     -- Set once, by the dial claim. Daily caps count this, not the request time.
     dialled_at TEXT NOT NULL DEFAULT '',
+    voice_engine TEXT NOT NULL DEFAULT '',
+    voice_session_id TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (tenant_id, idempotency_key)
@@ -109,6 +111,9 @@ class CallRecord:
     approved_by: str
     created_at: str
     updated_at: str
+    #: The engine the call was bridged to, chosen at answer time, and its session.
+    voice_engine: str = ""
+    voice_session_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +127,7 @@ class CallRecord:
             "failure": self.failure,
             "reason": self.reason,
             "approved_by": self.approved_by,
+            "voice_engine": self.voice_engine,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -130,7 +136,7 @@ class CallRecord:
 _CALL_COLUMNS = (
     "call_id, tenant_id, idempotency_key, agent, contact_id, purpose, task_id, telephony, "
     "action_digest, status, failure, reason, provider_call_ref, approved_by, created_at, "
-    "updated_at"
+    "updated_at, voice_engine, voice_session_id"
 )
 
 
@@ -153,6 +159,14 @@ class CommsStore:
         )
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns a store created by an earlier version lacks. Additive only."""
+        have = {row[1] for row in self._db.execute("PRAGMA table_info(calls)")}
+        for column in ("voice_engine", "voice_session_id"):
+            if column not in have:
+                self._db.execute(f"ALTER TABLE calls ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         self._db.close()
@@ -245,7 +259,7 @@ class CommsStore:
         try:
             self._write(
                 f"INSERT INTO calls ({_CALL_COLUMNS}) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', '', ?, ?)",
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', '', ?, ?, '', '')",
                 call_id, self.tenant_id, idempotency_key, agent, contact_id, purpose,
                 task_id, telephony, action_digest, status.value, reason, at, at,
             )
@@ -271,6 +285,39 @@ class CommsStore:
             "WHERE tenant_id = ? AND telephony = ? AND provider_call_ref = ?",
             self.tenant_id, telephony, provider_call_ref,
         ))
+
+    def call_for_carrier(self, telephony: str, call_id: str, ref: str) -> Optional[CallRecord]:
+        """The call a carrier callback names by our id, if it belongs to that carrier and the
+        reference is not already another call's. Adopts ``ref`` when none was stored yet —
+        the callback beat :meth:`set_provider_ref`."""
+        record = self.call(call_id)
+        if record is None or record.telephony != telephony:
+            return None
+        if record.provider_call_ref and record.provider_call_ref != ref:
+            return None
+        if not record.provider_call_ref:
+            self._write(
+                "UPDATE calls SET provider_call_ref = ? "
+                "WHERE tenant_id = ? AND call_id = ? AND provider_call_ref = ''",
+                ref, self.tenant_id, call_id,
+            )
+            record = self.call(call_id)
+        return record
+
+    def set_voice(self, call_id: str, *, engine: str, session_id: str = "", at: str) -> None:
+        self._write(
+            "UPDATE calls SET voice_engine = ?, voice_session_id = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ?",
+            engine, session_id, at, self.tenant_id, call_id,
+        )
+
+    def claim_session(self, call_id: str, *, engine: str, session_id: str, at: str) -> bool:
+        """Bind a voice session to a call exactly once. False means one is already bound."""
+        return self._write(
+            "UPDATE calls SET voice_session_id = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ? AND voice_engine = ? AND voice_session_id = ''",
+            session_id, at, self.tenant_id, call_id, engine,
+        ) == 1
 
     def claim_for_dial(self, call_id: str, *, approved_by: str, at: str) -> bool:
         """Move a call into ``initiated`` exactly once. False means someone else did."""
