@@ -45,6 +45,76 @@ CONSENT_MARKETING_WRITTEN = "marketing_written"
 CONSENT_KINDS = (CONSENT_AI_VOICE, CONSENT_MARKETING_WRITTEN)
 
 
+FIELD_KINDS = ("text", "number", "boolean", "date", "choice")
+_ATTRIBUTE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    """One thing a call of this purpose should establish, and where it may be written.
+
+    ``contact_attribute`` names the contact field a value may update; absent, the value is
+    kept on the call record only. ``auto_apply`` is the confidence at or above which a
+    value updates the contact without a person reviewing it — it never overwrites a value
+    a person entered, whatever the confidence.
+    """
+
+    name: str
+    kind: str = "text"
+    description: str = ""
+    options: tuple[str, ...] = ()
+    contact_attribute: str = ""
+    auto_apply: float = 0.9
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": self.name, "kind": self.kind,
+                               "description": self.description, "auto_apply": self.auto_apply}
+        if self.options:
+            out["options"] = list(self.options)
+        if self.contact_attribute:
+            out["contact_attribute"] = self.contact_attribute
+        return out
+
+
+def _field(doc: Doc, where: str) -> FieldSpec:
+    name = doc.str_("name", required=True)
+    if not _ATTRIBUTE.match(name):
+        raise SpecError("must be lowercase letters, digits and underscores",
+                        field=f"{where}.name", source=doc.source)
+    kind = doc.choice("kind", FIELD_KINDS, default="text") or "text"
+    options = tuple(doc.str_list("options"))
+    if (kind == "choice") != bool(options):
+        raise SpecError("options are required for kind choice, and only for it",
+                        field=f"{where}.options", source=doc.source)
+    attribute = doc.str_("contact_attribute")
+    if attribute and not _ATTRIBUTE.match(attribute):
+        raise SpecError("must be lowercase letters, digits and underscores",
+                        field=f"{where}.contact_attribute", source=doc.source)
+    raw = doc._raw("auto_apply")
+    if raw is None:
+        auto = 0.9
+    elif isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 <= raw <= 1:
+        raise SpecError("must be a confidence between 0 and 1 (1 means always review)",
+                        field=f"{where}.auto_apply", source=doc.source)
+    else:
+        auto = float(raw)
+    spec = FieldSpec(name=name, kind=kind, description=doc.str_("description"),
+                     options=options, contact_attribute=attribute, auto_apply=auto)
+    doc.reject_unknown()
+    return spec
+
+
+@dataclass(frozen=True)
+class ExtractionSpec:
+    """The model that reads finished calls. Its key lives with the gateway."""
+
+    llm_base_url: str = ""
+    llm_model: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if v}
+
+
 @dataclass(frozen=True)
 class Purpose:
     id: str
@@ -54,6 +124,8 @@ class Purpose:
     #: What the voice engine is told the call is for and how to conduct it. Tenant text,
     #: reviewed like any other prompt; the model never writes its own.
     instructions: str = ""
+    #: What a call of this purpose should establish. Empty means no extraction.
+    fields: tuple[FieldSpec, ...] = ()
 
     def required_consents(self) -> tuple[str, ...]:
         if self.marketing:
@@ -66,6 +138,7 @@ class Purpose:
             "description": self.description,
             "marketing": self.marketing,
             "instructions": self.instructions,
+            "fields": [f.to_dict() for f in self.fields],
         }
 
 
@@ -131,10 +204,15 @@ class CallingProfile:
     max_concurrent_calls: int = 1
     max_calls_per_day: int = 20
     recording: RecordingSpec = field(default_factory=RecordingSpec)
+    #: Days a redacted transcript is kept after extraction. 0, the default, deletes it as
+    #: soon as the call's fields are extracted: the structured record is what the
+    #: business needs, and a transcript nobody reads is only a liability.
+    keep_transcript_days: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "recording": self.recording.to_dict(),
+            "keep_transcript_days": self.keep_transcript_days,
             "agent": self.agent,
             "outbound": self.outbound,
             "telephony": self.telephony,
@@ -186,6 +264,7 @@ class CommunicationsSpec:
     public_url: str = ""
     #: Asked by the carrier before recording, when an agent's profile records.
     consent_prompt: str = DEFAULT_CONSENT_PROMPT
+    extraction: ExtractionSpec = field(default_factory=ExtractionSpec)
 
     @property
     def declared(self) -> bool:
@@ -208,6 +287,7 @@ class CommunicationsSpec:
             "cascade": self.cascade.to_dict(),
             "public_url": self.public_url,
             "consent_prompt": self.consent_prompt,
+            "extraction": self.extraction.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -327,6 +407,7 @@ def _profile(doc: Doc, index: int, spec_so_far: Mapping[str, Any]) -> CallingPro
         max_concurrent_calls=doc.int_("max_concurrent_calls", default=1, minimum=1, maximum=100),
         max_calls_per_day=doc.int_("max_calls_per_day", default=20, minimum=1, maximum=10000),
         recording=_recording(doc.child("recording"), where),
+        keep_transcript_days=doc.int_("keep_transcript_days", default=0, minimum=0, maximum=3650),
     )
     doc.reject_unknown()
     return profile
@@ -391,11 +472,23 @@ def parse_communications(
         raise SpecError("must be a list", field="communications.purposes", source=source)
     for index, item in enumerate(raw_purposes):
         pdoc = Doc(item, source=source, prefix=f"communications.purposes[{index}]", env=env)
+        where = f"communications.purposes[{index}]"
+        raw_fields = pdoc._raw("fields") or []
+        if not isinstance(raw_fields, list):
+            raise SpecError("must be a list", field=f"{where}.fields", source=source)
+        fields = tuple(
+            _field(Doc(item, source=source, prefix=f"{where}.fields[{i}]", env=env),
+                   f"{where}.fields[{i}]")
+            for i, item in enumerate(raw_fields)
+        )
+        if len({f.name for f in fields}) != len(fields):
+            raise SpecError("field names must be unique", field=f"{where}.fields", source=source)
         purpose = Purpose(
             id=pdoc.identifier("id"),
             description=pdoc.str_("description"),
             marketing=pdoc.bool_("marketing", default=False),
             instructions=pdoc.str_("instructions"),
+            fields=fields,
         )
         pdoc.reject_unknown()
         if purpose.id in purposes:
@@ -429,6 +522,18 @@ def parse_communications(
     disclosure = doc.str_("disclosure")
     public_url = doc.str_("public_url")
     consent_prompt = doc.str_("consent_prompt") or DEFAULT_CONSENT_PROMPT
+    extraction = ExtractionSpec()
+    extraction_doc = doc.child("extraction")
+    if extraction_doc is not None:
+        extraction = ExtractionSpec(llm_base_url=extraction_doc.str_("llm_base_url"),
+                                    llm_model=extraction_doc.str_("llm_model"))
+        extraction_doc.reject_unknown()
+    if any(p.fields for p in purposes.values()) and not (
+        extraction.llm_base_url.startswith("https://") and extraction.llm_model
+    ):
+        raise SpecError("a purpose declares fields, so extraction.llm_base_url (https://) and "
+                        "extraction.llm_model are required — the model that reads finished calls",
+                        field="communications.extraction", source=source)
     if public_url and not public_url.startswith("https://"):
         raise SpecError("must be an https:// URL — carriers only call back over HTTPS",
                         field="communications.public_url", source=source)
@@ -475,6 +580,7 @@ def parse_communications(
         cascade=cascade,
         public_url=public_url,
         consent_prompt=consent_prompt,
+        extraction=extraction,
     )
 
 

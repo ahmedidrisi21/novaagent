@@ -64,6 +64,7 @@ def get_call(api, call_id: str):
     try:
         record = store.call(call_id)
         recordings = store.recordings(call_id=call_id) if record is not None else []
+        extraction = store.extraction(call_id) if record is not None else None
     finally:
         store.close()
     if record is None:
@@ -72,7 +73,7 @@ def get_call(api, call_id: str):
     # plane that proxied it would be one more place a recording can leak from.
     return Response(200, {**record.to_dict(), "recordings": [
         {k: r[k] for k in ("state", "duration_seconds", "started_at", "retention_until")}
-        for r in recordings]})
+        for r in recordings], "extraction": extraction})
 
 
 def _approve(gateway, call_id, principal, reason):
@@ -143,5 +144,58 @@ def decide_call(api, tail: str, principal, payload: Mapping[str, Any]):
         return Response(status, body)
     except ProviderError as exc:
         return error(502, f"the carrier could not act on the call: {exc}", call_id=call_id)
+    finally:
+        gateway.store.close()
+
+
+def list_reviews(api, query: Mapping[str, str]):
+    from nova.communications.store import CommsStore
+    from nova.control.api import Response
+
+    store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
+    try:
+        status = str(query.get("status") or "pending")
+        return Response(200, {"reviews": store.reviews(status=status)})
+    finally:
+        store.close()
+
+
+def get_contact(api, contact_id: str):
+    from nova.communications.store import CommsStore
+    from nova.control.api import Response
+    from nova.control.api import _error as error
+
+    store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
+    try:
+        contact = store.contact(contact_id)
+        if contact is None:
+            return error(404, "no such contact in this tenant", contact_id=contact_id)
+        return Response(200, {
+            "contact_id": contact.contact_id, "groups": list(contact.groups),
+            "timezone": contact.timezone, "suppressed": store.is_suppressed(contact_id),
+            "consents": sorted(store.consents(contact_id)),
+            "fields": store.attributes(contact_id),
+        })
+    finally:
+        store.close()
+
+
+def decide_review(api, tail: str, principal, payload: Mapping[str, Any]):
+    from nova.communications.extraction import decide_review as decide
+    from nova.control.api import Response
+    from nova.control.api import _error as error
+
+    review_id = tail.strip("/").split("/")[2]
+    action = str(payload.get("action") or "").strip()
+    if action not in ("approve", "reject"):
+        return error(400, "action must be approve or reject", given=action or None)
+    gateway = _gateway(api, principal.name)
+    try:
+        return Response(200, decide(gateway, review_id, approve=action == "approve",
+                                    actor=principal.name))
+    except KeyError:
+        return error(404, "no such review in this tenant", review_id=review_id)
+    except ValueError as exc:
+        return error(409, str(exc), review_id=review_id)
     finally:
         gateway.store.close()

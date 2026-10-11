@@ -84,10 +84,14 @@ class LiveSideband:
     """Answers one session's delegations until the session closes. Testable without a socket."""
 
     def __init__(self, channel: MediaChannel, answer: Optional[Answerer],
-                 heard: Optional[Callable[[str, str], None]] = None) -> None:
+                 heard: Optional[Callable[[str, str], None]] = None,
+                 said: Optional[Callable[[str, str], None]] = None) -> None:
         self._channel = channel
         self._answer = answer
         self._listener = heard
+        self._said = said
+        #: The turn being spoken: ``[speaker, text]``. A delta from the other side ends it.
+        self._turn: list[str] = ["", ""]
         self._heard = ""
         #: The last stretch said by each side, for the payment guard: transcript deltas
         #: are fragments, and a card number arrives across several of them.
@@ -102,7 +106,19 @@ class LiveSideband:
             "content": content,
         }))
 
+    def _flush(self) -> None:
+        speaker, text = self._turn
+        if speaker and text.strip() and self._said is not None:
+            self._said(speaker, " ".join(text.split()))
+        self._turn = ["", ""]
+
     def run(self) -> None:
+        try:
+            self._run()
+        finally:
+            self._flush()
+
+    def _run(self) -> None:
         while True:
             try:
                 raw = self._channel.recv()
@@ -119,6 +135,10 @@ class LiveSideband:
                 if speaker == "caller":
                     self._heard = (self._heard + delta)[-QUESTION_CHARS:]
                 self._recent[speaker] = (self._recent[speaker] + delta)[-GUARD_CHARS:]
+                if self._turn[0] != speaker:
+                    self._flush()
+                    self._turn = [speaker, ""]
+                self._turn[1] += delta
                 if self._listener is not None:
                     self._listener(speaker, self._recent[speaker])
             elif kind == "session.delegation.created":
@@ -280,7 +300,7 @@ class OpenAILiveVoice(SipVoiceEngine):
                 log.warning("live sideband for %s did not open: %s", session_id, exc)
                 return
             try:
-                LiveSideband(channel, hooks.answer, hooks.heard).run()
+                LiveSideband(channel, hooks.answer, hooks.heard, hooks.said).run()
             finally:
                 channel.close()
 

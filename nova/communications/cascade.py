@@ -320,16 +320,22 @@ class CascadedCall:
             return False
         if not opening:
             self._history.append({"role": "user", "content": utterance})
+            if self._hooks.said is not None:
+                self._hooks.said("caller", utterance)
         if text:
             if self._hooks.heard is not None:
                 self._hooks.heard("agent", text)
             spoken = self._say(text)
             self._history.append({"role": "assistant",
                                   "content": text if spoken else f"{text} [interrupted]"})
+            if self._hooks.said is not None:
+                self._hooks.said("agent", text if spoken else f"{text} [interrupted]")
         return True
 
     def _honour_opt_out(self, utterance: str) -> None:
         self.opted_out = True
+        if self._hooks.said is not None:
+            self._hooks.said("caller", utterance)
         if self._hooks.opt_out is not None:
             self._hooks.opt_out(utterance)
         self._say(GOODBYE_AFTER_OPT_OUT)
