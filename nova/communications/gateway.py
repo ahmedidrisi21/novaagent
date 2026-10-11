@@ -32,6 +32,7 @@ from nova.communications.contracts import (
     AnswerPlan,
     CallHooks,
     CallStatus,
+    ConsentPrompt,
     FailureReason,
     PlaceCall,
     ProviderError,
@@ -49,6 +50,7 @@ from nova.communications.gate import (
     CallFacts,
     decide_call,
 )
+from nova.communications.recording import guard_for
 from nova.communications.spec import CommunicationsSpec
 from nova.communications.store import CallRecord, CommsStore
 
@@ -414,6 +416,26 @@ class CallGateway:
             # Ended, cancelled, or already bridged. Never put a second engine on a line.
             return hang_up()
 
+        if profile.recording.enabled:
+            # Ask before anyone is on the line; the consent callback connects the engine.
+            plan = AnswerPlan(say=self.spec.disclosure, language=profile.voice.language,
+                              consent=ConsentPrompt(record.call_id, self.spec.consent_prompt))
+            self.audit.record("communications.call.answered", correlation_id=correlation,
+                              subject=record.call_id, detail={"asking_consent": True})
+            return AnswerResponse(200, *carrier.render_answer(plan))
+
+        plan = self.bridge_plan(record, profile, say=self.spec.disclosure)
+        if plan is None:
+            return hang_up()
+        self.audit.record("communications.call.answered", correlation_id=correlation,
+                          subject=record.call_id,
+                          detail={"voice_engine": self.store.call(record.call_id).voice_engine})
+        return AnswerResponse(200, *carrier.render_answer(plan))
+
+    def bridge_plan(self, record: CallRecord, profile, *, say: str) -> Optional[AnswerPlan]:
+        """Connect an answered call to its voice engine. None (and the call failed) when no
+        engine this agent may use is configured."""
+        now = _iso(self._clock())
         engine = record.voice_engine or next(
             (e for e in profile.voice.ordered if e in self.voices), ""
         )
@@ -421,20 +443,16 @@ class CallGateway:
             reason = "no voice engine this agent may use is configured"
             self.store.advance(record.call_id, CallStatus.FAILED, at=now,
                                failure=FailureReason.PROVIDER_FAILURE, reason=reason)
-            self.audit.record("communications.call.failed", correlation_id=correlation,
+            self.audit.record("communications.call.failed", correlation_id=new_correlation_id(),
                               subject=record.call_id, error=reason)
-            return hang_up()
+            return None
         if not record.voice_engine:
             self.store.set_voice(record.call_id, engine=engine, at=now)
-
-        plan = AnswerPlan(
-            say=self.spec.disclosure,
+        return AnswerPlan(
+            say=say,
             language=profile.voice.language,
             connect=self.voices[engine].bridge_target(record.call_id, self.call_token(record.call_id)),
         )
-        self.audit.record("communications.call.answered", correlation_id=correlation,
-                          subject=record.call_id, detail={"voice_engine": engine})
-        return AnswerResponse(200, *carrier.render_answer(plan))
 
     # -- voice sessions -----------------------------------------------------------------
 
@@ -519,8 +537,9 @@ class CallGateway:
 
         self.store.advance(call_id, CallStatus.SESSION_CONNECTED, at=_iso(self._clock()))
         self.store.mark_applied(engine_id, incoming.event_id)
-        if answer is not None:
-            voice.attach(incoming.session_id, answer)
+        heard = guard_for(self, record)
+        if answer is not None or heard is not None:
+            voice.attach(incoming.session_id, CallHooks(answer=answer, heard=heard))
         self.audit.record("communications.call.session_connected", correlation_id=correlation,
                           subject=call_id,
                           detail={"voice_engine": engine_id, "knowledge": answer is not None})
@@ -556,6 +575,7 @@ class CallGateway:
                 source=f"call:{call_id}",
             ),
             end_call=lambda: self._end_quietly(self.store.call(call_id)),
+            heard=guard_for(self, record),
         )
         self.audit.record("communications.call.session_connected", correlation_id=correlation,
                           subject=call_id,

@@ -15,10 +15,6 @@ from __future__ import annotations
 import os
 from typing import Any, Mapping
 
-#: The operator verbs, and nothing else. A dashboard cannot place a call; agents request
-#: calls, people decide on them.
-CALL_ACTIONS = ("approve", "reject", "end")
-
 _NO_PUBLIC_URL = "https://public-url-not-configured.invalid"
 
 
@@ -67,24 +63,75 @@ def get_call(api, call_id: str):
     store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
     try:
         record = store.call(call_id)
+        recordings = store.recordings(call_id=call_id) if record is not None else []
     finally:
         store.close()
     if record is None:
         return error(404, "no such call in this tenant", call_id=call_id)
-    return Response(200, record.to_dict())
+    # Metadata only. The audio stays at the carrier behind its own credentials; a control
+    # plane that proxied it would be one more place a recording can leak from.
+    return Response(200, {**record.to_dict(), "recordings": [
+        {k: r[k] for k in ("state", "duration_seconds", "started_at", "retention_until")}
+        for r in recordings]})
+
+
+def _approve(gateway, call_id, principal, reason):
+    from nova.communications.contracts import CallStatus
+
+    result = gateway.approve(call_id, approver=principal.name)
+    record, decision = result.record, result.decision
+    dialled = record.status not in (CallStatus.APPROVAL_REQUIRED, CallStatus.POLICY_BLOCKED,
+                                    CallStatus.CANCELLED)
+    body = {**record.to_dict(), "actor": principal.name,
+            "decision": decision.to_dict() if decision else None}
+    # 409 when the world said no: the request was fine, the call was not callable.
+    return (200 if dialled and decision is not None else 409), body
+
+
+def _reject(gateway, call_id, principal, reason):
+    record = gateway.reject(call_id, approver=principal.name, reason=reason)
+    return 200, {**record.to_dict(), "actor": principal.name}
+
+
+def _end(gateway, call_id, principal, reason):
+    record = gateway.end_call(call_id, actor=principal.name, reason=reason)
+    return 200, {**record.to_dict(), "actor": principal.name}
+
+
+def _recording(paused: bool):
+    def act(gateway, call_id, principal, reason):
+        from nova.communications.recording import set_paused
+
+        changed = set_paused(gateway, call_id, paused, actor=principal.name)
+        return (200 if changed else 409), {"call_id": call_id, "changed": changed,
+                                           "actor": principal.name}
+
+    return act
+
+
+#: The operator verbs, and nothing else. A dashboard cannot place a call; agents request
+#: calls, people decide on them.
+_ACTIONS = {
+    "approve": _approve,
+    "reject": _reject,
+    "end": _end,
+    "pause-recording": _recording(True),
+    "resume-recording": _recording(False),
+}
+CALL_ACTIONS = tuple(_ACTIONS)
 
 
 def decide_call(api, tail: str, principal, payload: Mapping[str, Any]):
-    from nova.communications.contracts import CallStatus, ProviderError
+    from nova.communications.contracts import ProviderError
     from nova.control.api import Response
     from nova.control.api import _error as error
 
     call_id = tail.strip("/").split("/")[2]
     action = str(payload.get("action") or "").strip()
-    if action not in CALL_ACTIONS:
+    handler = _ACTIONS.get(action)
+    if handler is None:
         return error(400, f"action must be one of {', '.join(CALL_ACTIONS)}", given=action or None)
-    reason = str(payload.get("reason") or "").strip()
-    if action != "reject" and not api.bundle.communications.public_url:
+    if action in ("approve", "end") and not api.bundle.communications.public_url:
         return error(409, "communications.public_url is not set, so the carrier could not "
                           "report back on this call; set it before approving or ending calls")
 
@@ -92,20 +139,8 @@ def decide_call(api, tail: str, principal, payload: Mapping[str, Any]):
     try:
         if gateway.store.call(call_id) is None:
             return error(404, "no such call in this tenant", call_id=call_id)
-        if action == "approve":
-            result = gateway.approve(call_id, approver=principal.name)
-            record, decision = result.record, result.decision
-            dialled = record.status not in (CallStatus.APPROVAL_REQUIRED, CallStatus.POLICY_BLOCKED,
-                                            CallStatus.CANCELLED)
-            body = {**record.to_dict(), "actor": principal.name,
-                    "decision": decision.to_dict() if decision else None}
-            # 409 when the world said no: the request was fine, the call was not callable.
-            return Response(200 if dialled and decision is not None else 409, body)
-        if action == "reject":
-            record = gateway.reject(call_id, approver=principal.name, reason=reason)
-        else:
-            record = gateway.end_call(call_id, actor=principal.name, reason=reason)
-        return Response(200, {**record.to_dict(), "actor": principal.name})
+        status, body = handler(gateway, call_id, principal, str(payload.get("reason") or "").strip())
+        return Response(status, body)
     except ProviderError as exc:
         return error(502, f"the carrier could not act on the call: {exc}", call_id=call_id)
     finally:

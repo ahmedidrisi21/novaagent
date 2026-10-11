@@ -151,6 +151,40 @@ class StreamTarget:
 
 
 @dataclass(frozen=True)
+class ConsentPrompt:
+    """Ask, before any voice engine is on the line, whether the call may be recorded.
+
+    Asked by the carrier, in the tenant's words, and answered by key press or speech. The
+    carrier reports the answer to its consent callback for this call.
+    """
+
+    call_id: str
+    prompt: str
+
+
+@dataclass(frozen=True)
+class ConsentReply:
+    """The caller's answer to a :class:`ConsentPrompt`, as the carrier heard it."""
+
+    provider_call_ref: str
+    call_id_hint: str
+    digits: str = ""
+    speech: str = ""
+
+
+@dataclass(frozen=True)
+class RecordingEvent:
+    """A carrier's report about a recording."""
+
+    recording_ref: str
+    provider_call_ref: str
+    call_id_hint: str
+    #: ``in-progress``, ``completed``, ``absent`` (nothing was captured) or ``failed``.
+    status: str
+    duration_seconds: int = 0
+
+
+@dataclass(frozen=True)
 class AnswerPlan:
     """What happens the moment a call is answered, in carrier-neutral terms.
 
@@ -162,6 +196,9 @@ class AnswerPlan:
     say: str = ""
     language: str = ""
     connect: Optional[Union[SipTarget, StreamTarget]] = None
+    #: Ask for recording consent after ``say`` and stop there; the consent callback then
+    #: decides what follows. Never set together with ``connect``.
+    consent: Optional[ConsentPrompt] = None
 
 
 class ProviderError(Exception):
@@ -205,6 +242,27 @@ class TelephonyProvider(ABC):
     @abstractmethod
     def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
         """The carrier's own reply to its answer request: ``(content_type, body)``."""
+
+    @abstractmethod
+    def parse_consent(self, headers: Mapping[str, str], body: bytes, url: str) -> ConsentReply:
+        """A verified consent callback. Raises ``ValueError`` for a body it cannot read."""
+
+    @abstractmethod
+    def start_recording(self, call_id: str, provider_call_ref: str) -> str:
+        """Start recording a live call, both parties. Returns the recording reference.
+        Raises :class:`ProviderError`."""
+
+    @abstractmethod
+    def set_recording_paused(self, provider_call_ref: str, recording_ref: str, paused: bool) -> None:
+        """Pause (nothing is captured, not even silence) or resume. Raises :class:`ProviderError`."""
+
+    @abstractmethod
+    def delete_recording(self, recording_ref: str) -> None:
+        """Delete a recording at the carrier. Safe to call on one already deleted."""
+
+    @abstractmethod
+    def parse_recording(self, headers: Mapping[str, str], body: bytes, url: str) -> RecordingEvent:
+        """A verified recording-status callback. Raises ``ValueError`` for one it cannot read."""
 
     @abstractmethod
     def fetch_status(self, provider_call_ref: str) -> Optional[ProviderEvent]:
@@ -286,9 +344,11 @@ class SipVoiceEngine(VoiceEngine):
     def hang_up(self, session_id: str) -> None:
         """End a session. Must be safe to call twice."""
 
-    def attach(self, session_id: str, answer: Answerer) -> None:
-        """Serve mid-call questions for an accepted session. Engines without a side
-        channel do nothing: their sessions run on instructions alone."""
+    def attach(self, session_id: str, hooks: "CallHooks") -> None:
+        """Follow an accepted session: answer mid-call questions with ``hooks.answer`` and
+        report what is said to ``hooks.heard``. Engines without a side channel do nothing:
+        their sessions run on instructions alone, and cannot be recorded (nothing would
+        pause the recording around card details)."""
 
 
 class MediaChannel(ABC):
@@ -317,6 +377,10 @@ class CallHooks:
     answer: Optional[Answerer] = None
     opt_out: Optional[Callable[[str], None]] = None
     end_call: Optional[Callable[[], None]] = None
+    #: Everything said on the call as it is recognised — ``(speaker, text)``, speaker
+    #: ``caller`` or ``agent`` — partial results included. Feeds the payment guard, which
+    #: pauses a recording before card details are captured. Never stored.
+    heard: Optional[Callable[[str, str], None]] = None
 
 
 class StreamVoiceEngine(VoiceEngine):

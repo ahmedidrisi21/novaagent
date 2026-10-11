@@ -10,8 +10,9 @@ on purpose.
 version control. Carrier and voice credentials live with the gateway, never in a bundle and
 never in an agent's environment.
 
-Recording is deliberately absent. It needs consent capture and pause/resume, which do not
-exist yet, so an unknown ``recording:`` key is refused rather than accepted and ignored.
+Recording is off unless a profile turns it on, and turning it on requires a written legal
+basis: the field is the record that somebody decided, not a checkbox. Consent is then asked
+on every call, by the carrier, before any model is on the line.
 """
 
 from __future__ import annotations
@@ -88,6 +89,32 @@ class VoiceChoice:
         }
 
 
+RECORDING_REFUSAL = ("continue", "end")
+
+DEFAULT_CONSENT_PROMPT = (
+    "May we record this call? Press 1 or say yes to allow it. Press 2 or say no to "
+    "continue without recording."
+)
+
+
+@dataclass(frozen=True)
+class RecordingSpec:
+    """Whether an agent's calls may be recorded, and on what terms."""
+
+    enabled: bool = False
+    #: Why recording is lawful for this purpose and market, in the tenant's words.
+    legal_basis: str = ""
+    retention_days: int = 90
+    #: What happens when the person says no: carry on unrecorded, or end politely.
+    on_refusal: str = "continue"
+
+    def to_dict(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"enabled": False}
+        return {"enabled": True, "legal_basis": self.legal_basis,
+                "retention_days": self.retention_days, "on_refusal": self.on_refusal}
+
+
 @dataclass(frozen=True)
 class CallingProfile:
     """One agent's phone grant."""
@@ -103,9 +130,11 @@ class CallingProfile:
     max_call_seconds: int = 300
     max_concurrent_calls: int = 1
     max_calls_per_day: int = 20
+    recording: RecordingSpec = field(default_factory=RecordingSpec)
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "recording": self.recording.to_dict(),
             "agent": self.agent,
             "outbound": self.outbound,
             "telephony": self.telephony,
@@ -155,6 +184,8 @@ class CommunicationsSpec:
     #: The public HTTPS address carriers and voice engines call back on. Deployment
     #: configuration, so it can be overridden on the command line.
     public_url: str = ""
+    #: Asked by the carrier before recording, when an agent's profile records.
+    consent_prompt: str = DEFAULT_CONSENT_PROMPT
 
     @property
     def declared(self) -> bool:
@@ -176,6 +207,7 @@ class CommunicationsSpec:
             "disclosure": self.disclosure,
             "cascade": self.cascade.to_dict(),
             "public_url": self.public_url,
+            "consent_prompt": self.consent_prompt,
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -294,9 +326,29 @@ def _profile(doc: Doc, index: int, spec_so_far: Mapping[str, Any]) -> CallingPro
         max_call_seconds=doc.int_("max_call_seconds", default=300, minimum=30, maximum=3600),
         max_concurrent_calls=doc.int_("max_concurrent_calls", default=1, minimum=1, maximum=100),
         max_calls_per_day=doc.int_("max_calls_per_day", default=20, minimum=1, maximum=10000),
+        recording=_recording(doc.child("recording"), where),
     )
     doc.reject_unknown()
     return profile
+
+
+def _recording(doc: Optional[Doc], where: str) -> RecordingSpec:
+    if doc is None:
+        return RecordingSpec()
+    spec = RecordingSpec(
+        enabled=doc.bool_("enabled", default=False),
+        legal_basis=doc.str_("legal_basis"),
+        retention_days=doc.int_("retention_days", default=90, minimum=1, maximum=3650),
+        on_refusal=doc.choice("on_refusal", RECORDING_REFUSAL, default="continue") or "continue",
+    )
+    doc.reject_unknown()
+    if spec.enabled and len(spec.legal_basis) < 20:
+        raise SpecError(
+            "is required to record calls: say why recording is lawful for this purpose and "
+            "market (and who reviewed it), in at least a sentence",
+            field=f"{where}.recording.legal_basis", source=doc.source,
+        )
+    return spec
 
 
 def parse_communications(
@@ -376,6 +428,7 @@ def parse_communications(
         profiles.append(profile)
     disclosure = doc.str_("disclosure")
     public_url = doc.str_("public_url")
+    consent_prompt = doc.str_("consent_prompt") or DEFAULT_CONSENT_PROMPT
     if public_url and not public_url.startswith("https://"):
         raise SpecError("must be an https:// URL — carriers only call back over HTTPS",
                         field="communications.public_url", source=source)
@@ -421,6 +474,7 @@ def parse_communications(
         disclosure=disclosure,
         cascade=cascade,
         public_url=public_url,
+        consent_prompt=consent_prompt,
     )
 
 

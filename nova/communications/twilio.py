@@ -25,10 +25,12 @@ from xml.sax.saxutils import escape, quoteattr
 from nova.communications.contracts import (
     AnswerPlan,
     CallStatus,
+    ConsentReply,
     FailureReason,
     PlaceCall,
     ProviderError,
     ProviderEvent,
+    RecordingEvent,
     StreamTarget,
     TelephonyProvider,
 )
@@ -109,6 +111,8 @@ class TwilioTelephony(TelephonyProvider):
         status_url: str,
         transport: Transport = urllib_transport,
         ring_seconds: int = 30,
+        consent_url: str = "",
+        recording_url: str = "",
     ) -> None:
         if not (account_sid and auth_token):
             raise ValueError("Twilio needs an account SID and an auth token")
@@ -121,6 +125,9 @@ class TwilioTelephony(TelephonyProvider):
         self._status_url = status_url
         self._transport = transport
         self._ring_seconds = ring_seconds
+        base = answer_url.rsplit("/", 1)[0]
+        self._consent_url = consent_url or f"{base}/consent"
+        self._recording_url = recording_url or f"{base}/recording"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], *, answer_url: str, status_url: str) -> "TwilioTelephony":
@@ -129,15 +136,15 @@ class TwilioTelephony(TelephonyProvider):
             answer_url=answer_url, status_url=status_url,
         )
 
-    def _post(self, path: str, form: list[tuple[str, str]]) -> tuple[int, dict]:
+    def _post(self, path: str, form: list[tuple[str, str]], method: str = "POST") -> tuple[int, dict]:
         auth = base64.b64encode(f"{self._sid}:{self._token}".encode()).decode("ascii")
         try:
             status, body = self._transport(
-                "POST",
+                method,
                 f"{API_BASE}/{self._sid}/{path}",
                 {"Authorization": f"Basic {auth}",
                  "Content-Type": "application/x-www-form-urlencoded"},
-                urllib.parse.urlencode(form).encode("utf-8"),
+                urllib.parse.urlencode(form).encode("utf-8") if form else None,
             )
         except OSError as exc:
             raise ProviderError(f"Twilio could not be reached: {exc}") from exc
@@ -210,6 +217,58 @@ class TwilioTelephony(TelephonyProvider):
             failure=failure,
         )
 
+    def start_recording(self, call_id: str, provider_call_ref: str) -> str:
+        status, data = self._post(f"Calls/{provider_call_ref}/Recordings.json", [
+            ("RecordingStatusCallback", _with_call(self._recording_url, call_id)),
+            ("RecordingStatusCallbackEvent", "in-progress completed absent"),
+            ("RecordingChannels", "dual"),
+            ("RecordingTrack", "both"),
+        ])
+        if 200 <= status < 300 and data.get("sid"):
+            return str(data["sid"])
+        raise ProviderError(f"Twilio could not start recording ({status}): {data.get('message', '')}")
+
+    def set_recording_paused(self, provider_call_ref: str, recording_ref: str, paused: bool) -> None:
+        form = [("Status", "paused"), ("PauseBehavior", "skip")] if paused \
+            else [("Status", "in-progress")]
+        status, data = self._post(f"Calls/{provider_call_ref}/Recordings/{recording_ref}.json", form)
+        if not 200 <= status < 300:
+            raise ProviderError(f"Twilio could not {'pause' if paused else 'resume'} the "
+                                f"recording ({status}): {data.get('message', '')}")
+
+    def delete_recording(self, recording_ref: str) -> None:
+        status, data = self._post(f"Recordings/{recording_ref}.json", [], method="DELETE")
+        if not (200 <= status < 300 or status == 404):
+            raise ProviderError(f"Twilio could not delete the recording ({status}): "
+                                f"{data.get('message', '')}")
+
+    @staticmethod
+    def _form(body: bytes) -> dict[str, str]:
+        return {k: v[-1] for k, v in urllib.parse.parse_qs(
+            body.decode("utf-8", "replace"), keep_blank_values=True).items()}
+
+    @staticmethod
+    def _hint(url: str) -> str:
+        return (urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).get("call") or [""])[0]
+
+    def parse_consent(self, headers: Mapping[str, str], body: bytes, url: str) -> ConsentReply:
+        form = self._form(body)
+        if not form.get("CallSid"):
+            raise ValueError("not a Twilio gather callback")
+        return ConsentReply(form["CallSid"], self._hint(url), digits=form.get("Digits", ""),
+                            speech=form.get("SpeechResult", ""))
+
+    def parse_recording(self, headers: Mapping[str, str], body: bytes, url: str) -> RecordingEvent:
+        form = self._form(body)
+        if not (form.get("RecordingSid") and form.get("CallSid") and form.get("RecordingStatus")):
+            raise ValueError("not a Twilio recording callback")
+        try:
+            duration = int(form.get("RecordingDuration") or 0)
+        except ValueError:
+            duration = 0
+        return RecordingEvent(form["RecordingSid"], form["CallSid"], self._hint(url),
+                              form["RecordingStatus"], duration)
+
     def verify(self, headers: Mapping[str, str], body: bytes, url: str) -> bool:
         given = {k.lower(): v for k, v in headers.items()}.get(SIGNATURE_HEADER, "")
         if not given:
@@ -250,11 +309,24 @@ class TwilioTelephony(TelephonyProvider):
 
     def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
         parts = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response>"]
-        if plan.hang_up or plan.connect is None:
+        language = f" language={quoteattr(plan.language)}" if plan.language else ""
+        if plan.consent is not None and not plan.hang_up:
+            if plan.say:
+                parts.append(f"<Say{language}>{escape(plan.say)}</Say>")
+            action = quoteattr(_with_call(self._consent_url, plan.consent.call_id))
+            # actionOnEmptyResult: silence is reported too, and recorded as no answer —
+            # never skipped past into a recorded call.
+            parts.append(
+                f'<Gather input="dtmf speech" numDigits="1" timeout="6" speechTimeout="auto" '
+                f'actionOnEmptyResult="true" method="POST" action={action}{language}>'
+                f"<Say{language}>{escape(plan.consent.prompt)}</Say></Gather>"
+            )
+        elif plan.hang_up or plan.connect is None:
+            if plan.say:
+                parts.append(f"<Say{language}>{escape(plan.say)}</Say>")
             parts.append("<Hangup/>")
         else:
             if plan.say:
-                language = f" language={quoteattr(plan.language)}" if plan.language else ""
                 parts.append(f"<Say{language}>{escape(plan.say)}</Say>")
             if isinstance(plan.connect, StreamTarget):
                 params = "".join(

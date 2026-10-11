@@ -5,10 +5,12 @@ must stay private; this one is reached by vendors over the internet and authenti
 every request by its signature instead. Putting both behind one listener would put the
 operator surface on the internet.
 
-Three routes, POST only, bodies capped at 64 KiB:
+Five routes, POST only, bodies capped at 64 KiB:
 
-    /calls/<carrier>/answer   the carrier asks what to do with an answered call
-    /calls/<carrier>/status   call progress
+    /calls/<carrier>/answer     the carrier asks what to do with an answered call
+    /calls/<carrier>/consent    the person's answer to "may we record?"
+    /calls/<carrier>/recording  a recording started, finished, or captured nothing
+    /calls/<carrier>/status     call progress
     /voice/<engine>/events    a voice engine announces a bridged session
 
 ``public_url`` is the URL vendors are configured with. Signatures cover the exact URL the
@@ -26,22 +28,56 @@ from nova.communications.gateway import CallGateway
 MAX_BODY_BYTES = 64 * 1024
 
 
+def _answer(gateway, name, headers, body, url):
+    answer = gateway.answer(name, headers=headers, body=body, url=url)
+    return answer.http_status, answer.content_type, answer.body
+
+
+def _consent(gateway, name, headers, body, url):
+    from nova.communications.recording import consent_reply
+
+    answer = consent_reply(gateway, name, headers=headers, body=body, url=url)
+    return answer.http_status, answer.content_type, answer.body
+
+
+def _plain(result):
+    return result.http_status, "text/plain", result.outcome.encode("utf-8")
+
+
+def _recording(gateway, name, headers, body, url):
+    from nova.communications.recording import recording_event
+
+    return _plain(recording_event(gateway, name, headers=headers, body=body, url=url))
+
+
+def _status(gateway, name, headers, body, url):
+    return _plain(gateway.ingest(name, headers=headers, body=body, url=url))
+
+
+def _voice(gateway, name, headers, body, url):
+    return _plain(gateway.voice_event(name, headers=headers, body=body))
+
+
+#: ``/<area>/<provider>/<what>`` -> handler. Every route is enumerated here; nothing is
+#: matched by prefix.
+ROUTES = {
+    ("calls", "answer"): _answer,
+    ("calls", "consent"): _consent,
+    ("calls", "recording"): _recording,
+    ("calls", "status"): _status,
+    ("voice", "events"): _voice,
+}
+
+
 def handle(
     gateway: CallGateway, public_url: str, path: str, headers: dict[str, str], body: bytes
 ) -> tuple[int, str, bytes]:
     """Route one request. Pure enough to test without a socket: ``(status, type, body)``."""
     route = path.split("?", 1)[0].strip("/").split("/")
-    url = public_url.rstrip("/") + path
-    if len(route) == 3 and route[0] == "calls" and route[2] == "answer":
-        answer = gateway.answer(route[1], headers=headers, body=body, url=url)
-        return answer.http_status, answer.content_type, answer.body
-    if len(route) == 3 and route[0] == "calls" and route[2] == "status":
-        result = gateway.ingest(route[1], headers=headers, body=body, url=url)
-        return result.http_status, "text/plain", result.outcome.encode("utf-8")
-    if len(route) == 3 and route[0] == "voice" and route[2] == "events":
-        result = gateway.voice_event(route[1], headers=headers, body=body)
-        return result.http_status, "text/plain", result.outcome.encode("utf-8")
-    return 404, "text/plain", b"no such route"
+    handler = ROUTES.get((route[0], route[2])) if len(route) == 3 else None
+    if handler is None:
+        return 404, "text/plain", b"no such route"
+    return handler(gateway, route[1], headers, body, public_url.rstrip("/") + path)
 
 
 def build_server(

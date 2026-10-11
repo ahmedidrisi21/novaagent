@@ -266,6 +266,9 @@ class CascadedCall:
             elif kind == "Results":
                 alternatives = (message.get("channel") or {}).get("alternatives") or [{}]
                 text = str(alternatives[0].get("transcript") or "").strip()
+                if text and self._hooks.heard is not None:
+                    # Partials too: the guard must pause before the digits, not after.
+                    self._hooks.heard("caller", f"{heard} {text}".strip())
                 if message.get("is_final") and text:
                     heard = f"{heard} {text}".strip()
                 if message.get("speech_final") and heard:
@@ -318,6 +321,8 @@ class CascadedCall:
         if not opening:
             self._history.append({"role": "user", "content": utterance})
         if text:
+            if self._hooks.heard is not None:
+                self._hooks.heard("agent", text)
             spoken = self._say(text)
             self._history.append({"role": "assistant",
                                   "content": text if spoken else f"{text} [interrupted]"})
