@@ -49,6 +49,12 @@ class MockTelephony(TelephonyProvider):
         self.ended: list[str] = []
         #: Set to make the next ``place_call`` fail with this reason.
         self.fail_next: Optional[FailureReason] = None
+        #: What ``fetch_status`` reports per call reference; absent means "no such call".
+        self.carrier_status: dict[str, CallStatus] = {}
+        #: Set to make ``fetch_status`` fail as an unreachable carrier would.
+        self.unreachable = False
+        #: Every reference ``fetch_status`` was asked about, in order.
+        self.fetched: list[str] = []
 
     def place_call(self, request: PlaceCall) -> str:
         if self.fail_next is not None:
@@ -63,6 +69,16 @@ class MockTelephony(TelephonyProvider):
 
     def verify(self, headers: Mapping[str, str], body: bytes, url: str) -> bool:
         return _signed(self._secret, headers, body)
+
+    def fetch_status(self, provider_call_ref: str) -> Optional[ProviderEvent]:
+        self.fetched.append(provider_call_ref)
+        if self.unreachable:
+            raise ProviderError("mock carrier unreachable")
+        status = self.carrier_status.get(provider_call_ref)
+        if status is None:
+            return None
+        return ProviderEvent(self.id, f"{provider_call_ref}:fetched:{status.value}",
+                             provider_call_ref, status)
 
     def parse(self, headers: Mapping[str, str], body: bytes, url: str) -> ProviderEvent:
         try:

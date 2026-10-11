@@ -178,6 +178,38 @@ class TwilioTelephony(TelephonyProvider):
         if not (200 <= status < 300 or status in (400, 404)):
             raise ProviderError(f"Twilio could not end the call ({status}): {data.get('message', '')}")
 
+    def fetch_status(self, provider_call_ref: str) -> Optional[ProviderEvent]:
+        auth = base64.b64encode(f"{self._sid}:{self._token}".encode()).decode("ascii")
+        try:
+            status, body = self._transport(
+                "GET", f"{API_BASE}/{self._sid}/Calls/{provider_call_ref}.json",
+                {"Authorization": f"Basic {auth}"}, None,
+            )
+        except OSError as exc:
+            raise ProviderError(f"Twilio could not be reached: {exc}") from exc
+        if status == 404:
+            return None
+        if not 200 <= status < 300:
+            raise ProviderError(f"Twilio could not report the call ({status})")
+        try:
+            data = json.loads(body.decode("utf-8"))
+            raw = str(data["status"])
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ProviderError(f"unreadable call resource: {exc}") from exc
+        if raw not in _STATUS:
+            raise ProviderError(f"unknown Twilio call status {raw!r}")
+        mapped, failure = _STATUS[raw]
+        if str(data.get("answered_by") or "") in _MACHINE:
+            mapped, failure = CallStatus.FAILED, FailureReason.MACHINE_DETECTED
+        return ProviderEvent(
+            provider=self.id,
+            # Keyed by the status it reports: asking twice about the same state is one event.
+            provider_event_id=f"{provider_call_ref}:fetched:{raw}",
+            provider_call_ref=provider_call_ref,
+            status=mapped,
+            failure=failure,
+        )
+
     def verify(self, headers: Mapping[str, str], body: bytes, url: str) -> bool:
         given = {k.lower(): v for k, v in headers.items()}.get(SIGNATURE_HEADER, "")
         if not given:

@@ -152,6 +152,9 @@ class CommunicationsSpec:
     #: Spoken by the carrier, word for word, before any model is on the line.
     disclosure: str = ""
     cascade: CascadeSpec = field(default_factory=CascadeSpec)
+    #: The public HTTPS address carriers and voice engines call back on. Deployment
+    #: configuration, so it can be overridden on the command line.
+    public_url: str = ""
 
     @property
     def declared(self) -> bool:
@@ -172,6 +175,7 @@ class CommunicationsSpec:
             "allow_test_providers": self.allow_test_providers,
             "disclosure": self.disclosure,
             "cascade": self.cascade.to_dict(),
+            "public_url": self.public_url,
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -371,6 +375,10 @@ def parse_communications(
             )
         profiles.append(profile)
     disclosure = doc.str_("disclosure")
+    public_url = doc.str_("public_url")
+    if public_url and not public_url.startswith("https://"):
+        raise SpecError("must be an https:// URL — carriers only call back over HTTPS",
+                        field="communications.public_url", source=source)
     cascade = CascadeSpec()
     cascade_doc = doc.child("cascade")
     if cascade_doc is not None:
@@ -412,6 +420,7 @@ def parse_communications(
         allow_test_providers=allow_test,
         disclosure=disclosure,
         cascade=cascade,
+        public_url=public_url,
     )
 
 

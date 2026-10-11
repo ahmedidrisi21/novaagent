@@ -245,6 +245,33 @@ class CallGateway:
         )
         return self._require(call_id)
 
+    def now(self) -> datetime:
+        return self._clock()
+
+    def end_call(self, call_id: str, *, actor: str, reason: str = "") -> CallRecord:
+        """An operator stops a call. Pending ones are cancelled; live ones are hung up at the
+        carrier, whose final callback records how the call ended."""
+        if not actor:
+            raise ValueError("ending a call with no identity is not an action anyone took")
+        record = self._require(call_id)
+        correlation = new_correlation_id()
+        reason = reason or f"ended by {actor}"
+        if record.status.terminal:
+            return record
+        if record.status in (CallStatus.REQUESTED, CallStatus.APPROVAL_REQUIRED):
+            self.store.advance(call_id, CallStatus.CANCELLED, at=_iso(self._clock()), reason=reason)
+        else:
+            carrier = self.carriers.get(record.telephony)
+            if carrier is None or not record.provider_call_ref:
+                raise ProviderError(
+                    f"no {record.telephony!r} adapter or carrier reference to hang up with"
+                )
+            carrier.end_call(record.provider_call_ref)
+        self.audit.record("communications.call.ended", correlation_id=correlation,
+                          subject=call_id, detail={"actor": actor, "reason": reason,
+                                                   "was": record.status.value})
+        return self._require(call_id)
+
     def opt_out(self, contact_id: str, *, reason: str, source: str) -> None:
         """Suppress a contact. Takes effect for every agent and every later request at once."""
         self.store.suppress(contact_id, reason=reason, at=_iso(self._clock()))

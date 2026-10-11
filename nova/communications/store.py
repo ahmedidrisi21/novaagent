@@ -368,6 +368,43 @@ class CommsStore:
                 self._db.execute("ROLLBACK")
                 raise
 
+    def calls_with_status(
+        self, statuses, *, updated_before: str = "", limit: int = 500
+    ) -> list[CallRecord]:
+        """Calls in any of ``statuses``, oldest change first, optionally untouched since a time."""
+        values = [CallStatus(s).value for s in statuses]
+        if not values:
+            return []
+        marks = ", ".join("?" for _ in values)
+        sql = (f"SELECT {_CALL_COLUMNS} FROM calls WHERE tenant_id = ? AND status IN ({marks})")
+        args: list = [self.tenant_id, *values]
+        if updated_before:
+            sql += " AND updated_at < ?"
+            args.append(updated_before)
+        sql += " ORDER BY updated_at LIMIT ?"
+        args.append(int(limit))
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        return [_call(row) for row in rows]
+
+    def recent_calls(
+        self, *, limit: int = 50, agent: str = "", status: str = ""
+    ) -> list[CallRecord]:
+        """Newest first, for the call monitor."""
+        sql = f"SELECT {_CALL_COLUMNS} FROM calls WHERE tenant_id = ?"
+        args: list = [self.tenant_id]
+        if agent:
+            sql += " AND agent = ?"
+            args.append(agent)
+        if status:
+            sql += " AND status = ?"
+            args.append(CallStatus(status).value)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        return [_call(row) for row in rows]
+
     def count_active(self, agent: str) -> int:
         statuses = [s.value for s in ACTIVE]
         marks = ", ".join("?" for _ in statuses)
