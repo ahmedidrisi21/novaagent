@@ -31,6 +31,7 @@ from typing import Callable, Mapping, Optional
 
 from nova.communications.contracts import (
     Answerer,
+    CallHooks,
     IncomingSession,
     MediaChannel,
     ProviderError,
@@ -66,6 +67,9 @@ APPEND_CHARS = 1200
 #: tail is what was just asked.
 QUESTION_CHARS = 600
 
+#: Characters of each side's recent speech the payment guard sees at once.
+GUARD_CHARS = 80
+
 #: Opens a sideband. Injectable so tests never touch the network.
 Connector = Callable[[str, Mapping[str, str]], MediaChannel]
 
@@ -79,10 +83,15 @@ def _ws_connect(url: str, headers: Mapping[str, str]) -> MediaChannel:
 class LiveSideband:
     """Answers one session's delegations until the session closes. Testable without a socket."""
 
-    def __init__(self, channel: MediaChannel, answer: Answerer) -> None:
+    def __init__(self, channel: MediaChannel, answer: Optional[Answerer],
+                 heard: Optional[Callable[[str, str], None]] = None) -> None:
         self._channel = channel
         self._answer = answer
+        self._listener = heard
         self._heard = ""
+        #: The last stretch said by each side, for the payment guard: transcript deltas
+        #: are fragments, and a card number arrives across several of them.
+        self._recent = {"caller": "", "agent": ""}
         self._ids = itertools.count(1)
 
     def _send(self, kind: str, delegation_id: Optional[str], content: str) -> None:
@@ -104,8 +113,14 @@ class LiveSideband:
             except (TypeError, ValueError):
                 continue
             kind = event.get("type") if isinstance(event, dict) else None
-            if kind == "session.input_transcript.delta":
-                self._heard = (self._heard + str(event.get("delta") or ""))[-QUESTION_CHARS:]
+            if kind in ("session.input_transcript.delta", "session.output_transcript.delta"):
+                delta = str(event.get("delta") or "")
+                speaker = "caller" if kind.startswith("session.input") else "agent"
+                if speaker == "caller":
+                    self._heard = (self._heard + delta)[-QUESTION_CHARS:]
+                self._recent[speaker] = (self._recent[speaker] + delta)[-GUARD_CHARS:]
+                if self._listener is not None:
+                    self._listener(speaker, self._recent[speaker])
             elif kind == "session.delegation.created":
                 delegation_id = (event.get("delegation") or {}).get("id")
                 if delegation_id:
@@ -119,7 +134,7 @@ class LiveSideband:
         question, self._heard = self._heard.strip(), ""
         self._send("session.thinking.append", delegation_id, "Looking that up.")
         try:
-            reply = self._answer(question) if question else ""
+            reply = self._answer(question) if question and self._answer else ""
         except Exception as exc:  # noqa: BLE001 — a failed lookup must not drop the call
             log.warning("delegation lookup failed: %s", exc)
             reply = ""
@@ -246,8 +261,9 @@ class OpenAILiveVoice(SipVoiceEngine):
         if not 200 <= status < 300:
             raise ProviderError(f"OpenAI refused the session ({status}): {body[:200]!r}")
 
-    def attach(self, session_id: str, answer: Answerer) -> None:
-        """Serve delegations for an accepted session, on a background thread.
+    def attach(self, session_id: str, hooks: CallHooks) -> None:
+        """Follow an accepted session on a background thread: answer its delegations and
+        report what is said to ``hooks.heard``.
 
         The connection opens on that thread, not here: this runs inside a webhook handler,
         and a slow vendor handshake must not hold up other calls' webhooks. If it cannot
@@ -264,7 +280,7 @@ class OpenAILiveVoice(SipVoiceEngine):
                 log.warning("live sideband for %s did not open: %s", session_id, exc)
                 return
             try:
-                LiveSideband(channel, answer).run()
+                LiveSideband(channel, hooks.answer, hooks.heard).run()
             finally:
                 channel.close()
 

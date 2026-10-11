@@ -74,12 +74,29 @@ CREATE TABLE IF NOT EXISTS calls (
     dialled_at TEXT NOT NULL DEFAULT '',
     voice_engine TEXT NOT NULL DEFAULT '',
     voice_session_id TEXT NOT NULL DEFAULT '',
+    -- '' (never asked) | granted | refused | unclear. Evidence is what the caller pressed
+    -- or said, as the carrier heard it.
+    recording_consent TEXT NOT NULL DEFAULT '',
+    recording_evidence TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (tenant_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS calls_by_agent ON calls (tenant_id, agent, status);
 CREATE INDEX IF NOT EXISTS calls_by_ref ON calls (telephony, provider_call_ref);
+CREATE TABLE IF NOT EXISTS call_recordings (
+    tenant_id TEXT NOT NULL,
+    recording_ref TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    -- recording | paused | completed | absent | failed | deleted
+    state TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    retention_until TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant_id, recording_ref)
+);
+CREATE INDEX IF NOT EXISTS recordings_by_call ON call_recordings (tenant_id, call_id);
 CREATE TABLE IF NOT EXISTS call_events (
     provider TEXT NOT NULL,
     provider_event_id TEXT NOT NULL,
@@ -114,6 +131,8 @@ class CallRecord:
     #: The engine the call was bridged to, chosen at answer time, and its session.
     voice_engine: str = ""
     voice_session_id: str = ""
+    recording_consent: str = ""
+    recording_evidence: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -128,6 +147,7 @@ class CallRecord:
             "reason": self.reason,
             "approved_by": self.approved_by,
             "voice_engine": self.voice_engine,
+            "recording_consent": self.recording_consent,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -136,7 +156,7 @@ class CallRecord:
 _CALL_COLUMNS = (
     "call_id, tenant_id, idempotency_key, agent, contact_id, purpose, task_id, telephony, "
     "action_digest, status, failure, reason, provider_call_ref, approved_by, created_at, "
-    "updated_at, voice_engine, voice_session_id"
+    "updated_at, voice_engine, voice_session_id, recording_consent, recording_evidence"
 )
 
 
@@ -164,7 +184,8 @@ class CommsStore:
     def _migrate(self) -> None:
         """Add columns a store created by an earlier version lacks. Additive only."""
         have = {row[1] for row in self._db.execute("PRAGMA table_info(calls)")}
-        for column in ("voice_engine", "voice_session_id"):
+        for column in ("voice_engine", "voice_session_id", "recording_consent",
+                       "recording_evidence"):
             if column not in have:
                 self._db.execute(f"ALTER TABLE calls ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
@@ -259,7 +280,7 @@ class CommsStore:
         try:
             self._write(
                 f"INSERT INTO calls ({_CALL_COLUMNS}) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', '', ?, ?, '', '')",
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', '', ?, ?, '', '', '', '')",
                 call_id, self.tenant_id, idempotency_key, agent, contact_id, purpose,
                 task_id, telephony, action_digest, status.value, reason, at, at,
             )
@@ -404,6 +425,57 @@ class CommsStore:
         with self._lock:
             rows = self._db.execute(sql, args).fetchall()
         return [_call(row) for row in rows]
+
+    # -- recordings -----------------------------------------------------------------------
+
+    def set_recording_consent(self, call_id: str, outcome: str, evidence: str, *, at: str) -> bool:
+        """Record the answer once. False if this call already has one: the first answer stands."""
+        return self._write(
+            "UPDATE calls SET recording_consent = ?, recording_evidence = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ? AND recording_consent = ''",
+            outcome, evidence[:200], at, self.tenant_id, call_id,
+        ) == 1
+
+    def add_recording(self, call_id: str, recording_ref: str, *, at: str, retention_until: str) -> None:
+        self._write(
+            "INSERT OR IGNORE INTO call_recordings (tenant_id, recording_ref, call_id, state, "
+            "started_at, retention_until) VALUES (?, ?, ?, 'recording', ?, ?)",
+            self.tenant_id, recording_ref, call_id, at, retention_until,
+        )
+
+    def set_recording_state(self, recording_ref: str, state: str, *, duration: int = 0,
+                            at: str = "") -> None:
+        """Move a recording on. A deleted recording stays deleted whatever arrives later."""
+        self._write(
+            "UPDATE call_recordings SET state = ?, "
+            "duration_seconds = CASE WHEN ? > 0 THEN ? ELSE duration_seconds END, "
+            "deleted_at = CASE WHEN ? = 'deleted' THEN ? ELSE deleted_at END "
+            "WHERE tenant_id = ? AND recording_ref = ? AND state != 'deleted'",
+            state, duration, duration, state, at, self.tenant_id, recording_ref,
+        )
+
+    def recordings(self, *, call_id: str = "", contact_id: str = "",
+                   due_before: str = "") -> list[dict]:
+        """Recordings by call, by contact, or past retention — never the deleted ones."""
+        sql = ("SELECT r.recording_ref, r.call_id, r.state, r.duration_seconds, r.started_at, "
+               "r.retention_until FROM call_recordings r JOIN calls c "
+               "ON c.call_id = r.call_id AND c.tenant_id = r.tenant_id "
+               "WHERE r.tenant_id = ? AND r.state != 'deleted'")
+        args: list = [self.tenant_id]
+        if call_id:
+            sql += " AND r.call_id = ?"
+            args.append(call_id)
+        if contact_id:
+            sql += " AND c.contact_id = ?"
+            args.append(contact_id)
+        if due_before:
+            sql += " AND r.retention_until < ?"
+            args.append(due_before)
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY r.started_at", args).fetchall()
+        keys = ("recording_ref", "call_id", "state", "duration_seconds", "started_at",
+                "retention_until")
+        return [dict(zip(keys, row)) for row in rows]
 
     def count_active(self, agent: str) -> int:
         statuses = [s.value for s in ACTIVE]

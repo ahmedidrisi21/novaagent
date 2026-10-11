@@ -177,7 +177,7 @@ def test_a_slow_sideband_handshake_never_holds_up_the_webhook():
 
     voice = OpenAILiveVoice(api_key="sk", project_id="proj_x", webhook_secret="whsec_eA==",
                             connector=slow_connector)
-    voice.attach("sess_1", lambda q: "")  # returns while the handshake is still pending
+    voice.attach("sess_1", CallHooks(answer=lambda q: ""))  # returns while the handshake is pending
     assert not opened
     release.set()
     wait_for(lambda: opened, "the sideband to open")
@@ -189,7 +189,7 @@ def test_a_slow_sideband_handshake_never_holds_up_the_webhook():
         raise OSError("handshake refused")
 
     OpenAILiveVoice(api_key="sk", project_id="proj_x", webhook_secret="whsec_eA==",
-                    connector=refused).attach("sess_2", lambda q: "")  # logged, never raised
+                    connector=refused).attach("sess_2", CallHooks())  # logged, never raised
 
 
 # -- the gateway wires lookups only where a grant exists ----------------------------------
@@ -295,7 +295,7 @@ def test_a_sip_session_is_accepted_with_delegation_and_gets_its_lookup(world):
     headers, body = world.sip.incoming(session_id="s1", event_id="e1", sip_headers=plan["headers"])
     assert world.gateway.voice_event("mock-voice", headers=headers, body=body).outcome == "applied"
     assert world.sip.accepted["s1"].delegation is True
-    world.sip.attached["s1"]("refund window?")
+    world.sip.attached["s1"].answer("refund window?")
     assert world.lookups == ["refund window?"]
 
 

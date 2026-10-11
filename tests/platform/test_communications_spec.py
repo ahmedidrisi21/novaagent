@@ -46,11 +46,15 @@ BASE = {
 }
 
 
+#: Profile keys BASE leaves at their defaults, so a change to them lands on the profile.
+PROFILE_ONLY = {"recording", "approval", "max_call_seconds"}
+
+
 def doc(**changes):
     data = copy.deepcopy(BASE)
     profile = data["communications"]["agents"][0]
     for key, value in changes.items():
-        if key in profile:
+        if key in profile or key in PROFILE_ONLY:
             profile[key] = value
         else:
             data["communications"][key] = value
@@ -67,7 +71,7 @@ def doc(**changes):
         ({"voice": {"primary": "openai-live"}}, "voice"),      # not in the tenant allowlist
         ({"purposes": ["unknown"]}, "purposes"),
         ({"contact_groups": []}, "contact_groups"),
-        ({"recording": {"enabled": True}}, "recording"),       # not built: refused, not ignored
+        ({"recording": {"enabled": True}}, "legal_basis"),     # recording needs a stated basis
         ({"api_key": "sk-123"}, "api_key"),
     ],
 )

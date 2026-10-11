@@ -79,8 +79,8 @@ to extend it.
 
 `communications/` is the phone-call gate and carrier seam: who may call whom, for what, one
 dial per request, approval bound to the exact call, plus the Twilio, GPT-Live and cascaded
-Deepgram + Cartesia adapters, read-only knowledge lookups mid-call, and the internet-facing
-webhook listener and media bridge (never the Control API). Read
+Deepgram + Cartesia adapters, read-only knowledge lookups mid-call, recording with carrier-asked consent and a payment
+guard, and the internet-facing webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.
 

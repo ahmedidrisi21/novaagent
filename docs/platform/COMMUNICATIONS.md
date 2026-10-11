@@ -273,11 +273,65 @@ store still thinks is ringing, holding one of its agent's concurrency slots. The
 Admin throughout: a call list names customers, and approving dials a real person. The
 dashboard's source is not in this repository, so the screen for these routes is not here.
 
+## Recording with consent
+
+Off unless an agent's profile turns it on, and turning it on requires a written legal basis:
+
+```yaml
+communications:
+  consent_prompt: "May we record this call? Press 1 or say yes to allow it. Press 2 or say no to continue without recording."
+  agents:
+    - agent: customer-support
+      recording:
+        enabled: true
+        legal_basis: "Quality assurance; all-party consent asked on every call; reviewed by <counsel>, <date>."
+        retention_days: 90
+        on_refusal: continue        # or: end
+```
+
+**One rule, every market: ask everyone, every time, record only on an explicit yes.** Several
+US states need every party's consent. Asking everyone satisfies all of them and needs no
+per-state logic that could be wrong. The legal review is still needed to sign the rule off for
+each launch market; that review is a person's job, and `legal_basis` is where it is written down.
+
+```
+answered ─▶ disclosure ─▶ "May we record?"  (carrier <Gather>: key 1/2 or speech; silence reported)
+                              │
+          ┌───────────────────┼────────────────────────┐
+        yes (1, "yes",     no / silence /            no, and on_refusal: end
+        "sure, go ahead")  "yes... actually no"            │
+          │                   │                       "Goodbye", hang up
+   record both parties,   no recording
+   dual channel               │
+          └───────────▶ connect the voice engine
+```
+
+- **Consent is classified deterministically.** No model decides whether someone said yes.
+  Only an explicit yes (key 1, or yes-words with no no-words) counts. Anything ambiguous
+  is no. The answer is kept on the call as evidence ("pressed 1", `said "sure, go ahead"`),
+  and a retried callback cannot change it.
+- **Payment details are never captured.** The payment guard hears both sides as speech is
+  recognised, partial results included, and pauses the recording the moment card, account
+  or identity talk starts, or a run of eight or more digits. That is before the number, not
+  after it. It resumes after 20 s of ordinary conversation. The pause skips audio rather
+  than recording silence. Both engines feed it: the cascaded engine from Deepgram partials,
+  GPT-Live from its sideband transcript. That is why a recording profile on GPT-Live always
+  attaches the sideband. The guard errs towards pausing: a phone number read out pauses too.
+- **Recordings stay at the carrier** and NOVA keeps their metadata: state, duration,
+  retention date. The Control API returns metadata only; it never proxies audio.
+- **Retention:** the sweep deletes each recording at the carrier when its
+  `retention_days` pass. `nova calls forget-recordings BUNDLE CONTACT` deletes a person's
+  recordings on request.
+- **Operator controls:** `nova calls pause-recording|resume-recording BUNDLE CALL_ID`, and
+  `pause-recording` / `resume-recording` actions on
+  `POST /communications/calls/<id>/decide`. All are audited.
+
 ## Not built yet, in the order it lands
 
 1. **Next:** a first live call on a test number.
-2. **Recording with consent:** consent captured on the call, pause/resume around card
-   numbers, tenant-keyed storage and retention. Its own change, with legal review.
+2. **Legal sign-off of the consent rule per launch market**, then switching recording on
+   for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
+   instead of keeping them at the carrier is a later option.
 3. **Phase 4:** the agent-facing `communications` toolset (request a call, read its status),
    added per session from the calling profile, never through an environment variable;
    transcripts, extraction and post-call actions.

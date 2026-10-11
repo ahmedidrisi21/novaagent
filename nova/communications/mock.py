@@ -16,11 +16,13 @@ from typing import Any, Mapping, Optional
 from nova.communications.contracts import (
     AnswerPlan,
     CallStatus,
+    ConsentReply,
     FailureReason,
     IncomingSession,
     PlaceCall,
     ProviderError,
     ProviderEvent,
+    RecordingEvent,
     SipTarget,
     SipVoiceEngine,
     StreamTarget,
@@ -55,6 +57,9 @@ class MockTelephony(TelephonyProvider):
         self.unreachable = False
         #: Every reference ``fetch_status`` was asked about, in order.
         self.fetched: list[str] = []
+        #: recording ref -> "recording" | "paused" | "deleted"
+        self.recordings: dict[str, str] = {}
+        self.fail_recording = False
 
     def place_call(self, request: PlaceCall) -> str:
         if self.fail_next is not None:
@@ -80,6 +85,42 @@ class MockTelephony(TelephonyProvider):
         return ProviderEvent(self.id, f"{provider_call_ref}:fetched:{status.value}",
                              provider_call_ref, status)
 
+    def parse_consent(self, headers: Mapping[str, str], body: bytes, url: str) -> ConsentReply:
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            return ConsentReply(str(payload["call_ref"]), str(payload.get("call_id", "")),
+                                digits=str(payload.get("digits", "")),
+                                speech=str(payload.get("speech", "")))
+        except (KeyError, ValueError, TypeError, UnicodeDecodeError) as exc:
+            raise ValueError(f"not a mock consent callback: {exc}") from exc
+
+    def start_recording(self, call_id: str, provider_call_ref: str) -> str:
+        if self.fail_recording:
+            raise ProviderError("mock carrier could not record")
+        ref = f"rec-{len(self.recordings) + 1}"
+        self.recordings[ref] = "recording"
+        return ref
+
+    def set_recording_paused(self, provider_call_ref: str, recording_ref: str, paused: bool) -> None:
+        self.recordings[recording_ref] = "paused" if paused else "recording"
+
+    def delete_recording(self, recording_ref: str) -> None:
+        self.recordings[recording_ref] = "deleted"
+
+    def parse_recording(self, headers: Mapping[str, str], body: bytes, url: str) -> RecordingEvent:
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            return RecordingEvent(str(payload["recording_ref"]), str(payload["call_ref"]),
+                                  str(payload.get("call_id", "")), str(payload["status"]),
+                                  int(payload.get("duration", 0)))
+        except (KeyError, ValueError, TypeError, UnicodeDecodeError) as exc:
+            raise ValueError(f"not a mock recording callback: {exc}") from exc
+
+    def signed(self, payload: Mapping[str, Any]) -> tuple[dict[str, str], bytes]:
+        """Any payload, signed as this carrier signs callbacks."""
+        body = json.dumps(dict(payload), sort_keys=True).encode("utf-8")
+        return {SIGNATURE_HEADER: _sign(self._secret, body)}, body
+
     def parse(self, headers: Mapping[str, str], body: bytes, url: str) -> ProviderEvent:
         try:
             payload = json.loads(body.decode("utf-8"))
@@ -99,6 +140,10 @@ class MockTelephony(TelephonyProvider):
         )
 
     def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
+        if plan.consent is not None and not plan.hang_up:
+            return "application/json", json.dumps(
+                {"hang_up": False, "say": plan.say, "ask_consent": plan.consent.prompt},
+                sort_keys=True).encode("utf-8")
         out: dict[str, Any] = {"hang_up": plan.hang_up or plan.connect is None}
         if not out["hang_up"]:
             out["say"] = plan.say
@@ -161,8 +206,8 @@ class MockVoice(SipVoiceEngine):
     def reject(self, session_id: str) -> None:
         self.rejected.append(session_id)
 
-    def attach(self, session_id: str, answer) -> None:
-        self.attached[session_id] = answer
+    def attach(self, session_id: str, hooks) -> None:
+        self.attached[session_id] = hooks
 
     def hang_up(self, session_id: str) -> None:
         if session_id not in self.hung_up:

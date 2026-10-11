@@ -65,7 +65,17 @@ def register(sub) -> None:
         parser.add_argument("--reason", default="")
         parser.add_argument("--public-url", default="")
 
-    command("reconcile", "settle calls whose callbacks never arrived; expire old approvals")
+    command("reconcile", "settle calls whose callbacks never arrived; expire old approvals "
+                         "and recordings past retention")
+
+    for name, helptext in (("pause-recording", "stop capturing audio on a live call"),
+                           ("resume-recording", "capture audio again on a live call")):
+        parser = command(name, helptext, call=True)
+        parser.add_argument("--actor", default="")
+
+    forget = command("forget-recordings", "delete every recording of one contact, now")
+    forget.add_argument("contact_id")
+    forget.add_argument("--actor", default="")
 
     contacts = command("import-contacts", "import contacts and consent from a CRM CSV export")
     contacts.add_argument("csv", type=Path)
@@ -207,6 +217,22 @@ def _opt_out(args, bundle, gateway, public_url) -> int:
     return 0
 
 
+def _pause(args, bundle, gateway, public_url) -> int:
+    from nova.communications.recording import set_paused
+
+    changed = set_paused(gateway, args.call_id, args.calls_command == "pause-recording",
+                         actor=_actor(args))
+    print(f"{changed} recording(s) {'paused' if args.calls_command == 'pause-recording' else 'resumed'}")
+    return 0 if changed else 1
+
+
+def _forget(args, bundle, gateway, public_url) -> int:
+    from nova.communications.recording import forget_contact
+
+    print(f"deleted {forget_contact(gateway, args.contact_id, actor=_actor(args))} recording(s)")
+    return 0
+
+
 def run(args, runtime_factory) -> int:
     """Dispatch ``nova calls``. ``runtime_factory(tenant_id)`` returns the runtime."""
     bundle, gateway, public_url = _open(args, runtime_factory)
@@ -261,4 +287,7 @@ _COMMANDS = {
     "import-contacts": _import_contacts,
     "consent": _consent,
     "opt-out": _opt_out,
+    "pause-recording": _pause,
+    "resume-recording": _pause,
+    "forget-recordings": _forget,
 }

@@ -14,6 +14,8 @@ exceptions are states no carrier knows about:
   answered the dial request *and* sent no callback carrying our call id. Marked failed with
   a reason that says exactly that, so a human can check the carrier console if it matters.
 
+Recordings past their retention are deleted at the carrier.
+
 Approvals expire after ``APPROVAL_TTL``: an approval given tomorrow for a call proposed
 today is approving a context that no longer exists.
 
@@ -30,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from nova.audit import new_correlation_id
 from nova.communications.contracts import ACTIVE, CallStatus, FailureReason, ProviderError
 from nova.communications.gateway import CallGateway
+from nova.communications.recording import expire
 from nova.communications.store import CallRecord
 
 STRANDED_AFTER = timedelta(minutes=10)
@@ -104,4 +107,8 @@ def sweep(gateway: CallGateway) -> list[Reconciled]:
         if store.record_event(provider=carrier.id, provider_event_id=event.provider_event_id,
                               call_id=record.call_id, status=event.status, at=_iso(now)):
             settle(record, event.status, f"carrier reports {event.status.value}", event.failure)
+
+    expired = expire(gateway)
+    if expired:
+        out.append(Reconciled("", "", "", f"deleted {expired} recording(s) past retention"))
     return out
