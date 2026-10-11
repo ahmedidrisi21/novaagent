@@ -374,17 +374,49 @@ the transcript waiting rather than lose it.
 | `GET /communications/contacts/<id>` | admin: groups, consent, suppression, fields with provenance |
 | `GET /communications/calls/<id>` | now includes the extraction |
 
+## Phase 4a, part 2: agents request calls
+
+An agent with a calling profile gets two tools; every other agent gets none.
+
+| Tool | |
+|---|---|
+| `request_call(contact_id, purpose, note)` | asks for a call to a contact by CRM id, for one of the agent's own purposes (an enum in the schema). It does not dial. |
+| `call_status(request_id)` | queued, waiting for approval, refused (with the reason), ringing, connected, completed or failed |
+
+```
+agent ── request_call ──▶ <home>/nova-calls-inbox/requests/<agent>/<id>.json   (HMAC-signed)
+                                         │  nova calls serve, every 2 s
+                                         ▼
+                 signature ✓ for <agent> ─▶ CallGateway.request_call  (grant, consent, hours,
+                 agent/id match the path     caps, approval: the same gate as everything else)
+                                         │
+agent ◀─ call_status ── results/<agent>/<id>.json  (refreshed as the call progresses)
+```
+
+- **No credentials in the agent.** The tool writes a request; the gateway, which holds the
+  carrier keys, decides it. An agent names a contact; it never supplies a number.
+- **Signed per agent.** Each agent's key is an HMAC of a deployment master key
+  (`<home>/nova/call-request.key`, created on first apply, mode 0600) and the agent id. A
+  request is accepted only if it verifies against the agent its inbox directory names.
+- **Idempotent.** The request id is the idempotency key: picked up twice, it dials once.
+- **Installed like the knowledge tool.** `nova apply` writes `nova-calling.json` (purposes,
+  inbox, the agent's key) and the plugin, and enables it in the agent's `config.yaml`, only
+  for agents with a calling profile. The purposes are part of the agent's digest, so
+  changing them re-applies; the key and inbox path are deployment and are not.
+- **The boundary, stated plainly.** Agents are separated by what separates their profiles:
+  the operating-system boundary between them. An agent that can read another profile's
+  files could sign as it, which is the same boundary knowledge grants rest on. Run agents
+  as separate users, or deny cross-profile reads in policy, where that matters.
+
 ## Not built yet, in the order it lands
 
 1. **Next:** a first live call on a test number.
 2. **Legal sign-off of the consent rule per launch market**, then switching recording on
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
-3. **Phase 4a, part 2:** the agent-facing calling tool (request a call, read its status),
-   installed only for agents with a calling profile.
-4. **Phase 4b:** post-call actions (callbacks, follow-up email, tasks, escalation) with
+3. **Phase 4b:** post-call actions (callbacks, follow-up email, tasks, escalation) with
    auto/approve/never tiers; an email provider; agent-to-agent delegation; unified history.
-5. **Phase 5:** Bedrock Nova Sonic, ElevenLabs Agents if the benchmark justifies it, mid-call
+4. **Phase 5:** Bedrock Nova Sonic, ElevenLabs Agents if the benchmark justifies it, mid-call
    failover.
 
 A dashboard screen for the call monitor needs the dashboard's source, which is not here.

@@ -669,8 +669,12 @@ class AgentRuntime(ABC):
         knowledge: Optional[KnowledgeCatalog] = None,
         deployment: Optional[DeploymentSpec] = None,
         dry_run: bool = False,
+        calling: Optional[dict] = None,
     ) -> MaterializeResult:
         """Create or update one agent inside the runtime.
+
+        ``calling`` is the agent's resolved calling grant (see
+        :func:`nova.communications.inbox.calling_grant`); None means it may not request calls.
 
         Must be idempotent: materializing an unchanged spec twice leaves the runtime
         identical and reports ``unchanged``. Must route the change through
@@ -694,6 +698,7 @@ class AgentRuntime(ABC):
         *,
         policy: Optional[CompiledPolicy] = None,
         knowledge: Optional[KnowledgeCatalog] = None,
+        communications=None,
     ) -> str:
         """The digest :meth:`materialize_agent` would record for this spec, without writing.
 
@@ -707,7 +712,9 @@ class AgentRuntime(ABC):
         The default covers the portable inputs; :func:`nova.policy.agent_digest` is the one
         implementation underneath.
         """
-        return agent_digest(spec, policy)
+        from nova.communications.inbox import calling_identity
+
+        return agent_digest(spec, policy, calling=calling_identity(communications, spec.id))
 
     @abstractmethod
     def list_agents(self) -> list[MaterializedAgent]:
@@ -1073,6 +1080,11 @@ class AgentRuntime(ABC):
         wrong file the first time an adapter laid its state out differently.
         """
         return self.state_location / "nova-knowledge.db"
+
+    @property
+    def calls_inbox_path(self) -> Path:
+        """Where agents' calling tools leave signed call requests for the gateway."""
+        return self.state_location / "nova-calls-inbox"
 
     @property
     def calls_store_path(self) -> Path:

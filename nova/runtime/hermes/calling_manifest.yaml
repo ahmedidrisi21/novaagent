@@ -1,0 +1,12 @@
+name: nova-calling
+version: 1.0.0
+description: >-
+  NOVA Calling. Lets this agent request phone calls to contacts for its approved purposes and
+  read where each request stands. It never dials: the call gateway decides every request
+  against consent, opt-outs, calling hours, limits and approval. Installed and maintained by
+  NOVA; edits here are overwritten on the next apply.
+author: NOVA
+kind: standalone
+provides_tools:
+  - request_call
+  - call_status

@@ -106,6 +106,14 @@ class HermesPaths:
         """The knowledge tool, scoped to one agent by the same mechanism as the policy plugin."""
         return self.profile_dir(agent_id) / "plugins" / "nova-knowledge"
 
+    def calling_plugin_dir(self, agent_id: str) -> Path:
+        """The calling tools, installed only for an agent with a calling grant."""
+        return self.profile_dir(agent_id) / "plugins" / "nova-calling"
+
+    def calling_config_path(self, agent_id: str) -> Path:
+        """This agent's calling grant and signing key, read by the calling plugin."""
+        return self.profile_dir(agent_id) / "nova-calling.json"
+
     def knowledge_config_path(self, agent_id: str) -> Path:
         """Which corpora this agent may search, read by the knowledge plugin."""
         return self.profile_dir(agent_id) / "nova-knowledge.json"
