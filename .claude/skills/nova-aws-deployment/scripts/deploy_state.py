@@ -77,7 +77,7 @@ def load():
     p = path()
     if not os.path.exists(p):
         return None
-    with open(p) as f:
+    with open(p, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -85,7 +85,7 @@ def save(s):
     p = path()
     os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
     tmp = p + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(s, f, indent=2)
     os.replace(tmp, p)
 
