@@ -15,8 +15,8 @@ exceptions are states no carrier knows about:
   a reason that says exactly that, so a human can check the carrier console if it matters.
 
 Recordings past their retention are deleted at the carrier. Finished calls are read into
-fields and an action plan, due actions are carried out, and email text past its keep date
-is deleted.
+fields and an action plan, due actions are carried out, email text past its keep date is
+deleted, and delegations are put on the board or expired at their deadline.
 
 Approvals expire after ``APPROVAL_TTL``: an approval given tomorrow for a call proposed
 today is approving a context that no longer exists.
@@ -35,6 +35,7 @@ from nova.audit import new_correlation_id
 from nova.communications.contracts import ACTIVE, CallStatus, FailureReason, ProviderError
 from nova.communications.gateway import CallGateway
 from nova.communications.actions import run_due
+from nova.communications.delegation import sweep_delegations
 from nova.communications.extraction import run_pending
 from nova.communications.followup_email import expire_bodies
 from nova.communications.recording import expire
@@ -121,6 +122,9 @@ def sweep(gateway: CallGateway) -> list[Reconciled]:
     if carried:
         out.append(Reconciled("", "", "", f"carried out {carried} post-call action(s)"))
     expire_bodies(gateway)
+    delegated = sweep_delegations(gateway)
+    if delegated:
+        out.append(Reconciled("", "", "", f"assigned or expired {delegated} delegation(s)"))
 
     expired = expire(gateway)
     if expired:

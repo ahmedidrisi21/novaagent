@@ -352,6 +352,14 @@ class ControlAPI:
             from nova.control.api_calls import action_stats
 
             return action_stats(self, query)
+        if tail == "/communications/history":
+            from nova.control.api_calls import history
+
+            return history(self, query)
+        if tail == "/communications/delegations":
+            from nova.control.api_calls import list_delegations
+
+            return list_delegations(self, query)
         if tail.startswith("/communications/contacts/"):
             from nova.control.api_calls import get_contact
 

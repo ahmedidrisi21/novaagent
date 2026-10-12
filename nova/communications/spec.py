@@ -24,6 +24,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from nova._fields import Doc
 from nova.communications.providers import Kind, get_provider
+from nova.communications.spec_delegation import DelegationSpec, parse_delegation
 from nova.communications.spec_actions import (
     ActionsSpec,
     EmailSpec,
@@ -278,10 +279,11 @@ class CommunicationsSpec:
     extraction: ExtractionSpec = field(default_factory=ExtractionSpec)
     actions: ActionsSpec = field(default_factory=ActionsSpec)
     email: EmailSpec = field(default_factory=EmailSpec)
+    delegation: DelegationSpec = field(default_factory=DelegationSpec)
 
     @property
     def declared(self) -> bool:
-        return bool(self.profiles or self.purposes)
+        return bool(self.profiles or self.purposes or self.delegation.declared)
 
     def profile(self, agent: str) -> Optional[CallingProfile]:
         for profile in self.profiles:
@@ -303,6 +305,7 @@ class CommunicationsSpec:
             "extraction": self.extraction.to_dict(),
             "actions": self.actions.to_dict(),
             "email": self.email.to_dict(),
+            "delegation": self.delegation.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -483,6 +486,7 @@ def parse_communications(
 
     actions = parse_actions(doc.child("actions"))
     email = parse_email(doc.child("email"), allow_test=allow_test)
+    delegation = parse_delegation(doc.child("delegation"))
     purposes: dict[str, Purpose] = {}
     raw_purposes = doc._raw("purposes") or []
     if not isinstance(raw_purposes, list):
@@ -583,6 +587,15 @@ def parse_communications(
     if email_rule is not None and email_rule.tier != "never" and not email.provider:
         raise SpecError("follow-up emails are configured, so communications.email (provider "
                         "and from) is required", field="communications.email", source=source)
+    handoff = actions.rule("handoff")
+    if handoff is not None and handoff.tier != "never":
+        for profile in profiles:
+            if any("handoff" in purposes[p].actions for p in profile.purposes) and \
+                    not delegation.may(profile.agent, handoff.assignee):
+                raise SpecError(
+                    f"{profile.agent!r} may propose handoffs to {handoff.assignee!r}, so "
+                    "communications.delegation needs a route between them",
+                    field="communications.delegation.routes", source=source)
     if email.provider and not public_url:
         raise SpecError("is required to send email: every email carries an unsubscribe link "
                         "to it", field="communications.public_url", source=source)
@@ -610,6 +623,7 @@ def parse_communications(
         extraction=extraction,
         actions=actions,
         email=email,
+        delegation=delegation,
     )
 
 
@@ -633,6 +647,9 @@ def load_communications(
 
 def check_agents_exist(spec: CommunicationsSpec, agent_ids: Sequence[str]) -> None:
     known = set(agent_ids)
+    for agent in sorted(spec.delegation.participants() - known):
+        raise SpecError(f"delegation route names {agent!r}, which this bundle does not define",
+                        field="communications.delegation.routes")
     for rule in spec.actions.rules.values():
         if rule.assignee and rule.assignee not in known:
             raise SpecError(

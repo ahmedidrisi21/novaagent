@@ -142,7 +142,7 @@ def test_an_agents_request_is_decided_by_the_gateway_and_dials_once(gateway):
     assert (status["status"], status["call_id"]) == ("initiated", result["call_id"])
 
     # Picked up twice — a second gateway, or a crash before the file moved — dials once.
-    done = runtime.calls_inbox_path / "done" / "customer-support" / f"{queued['request_id']}.json"
+    done = runtime.calls_inbox_path / "done" / "requests" / "customer-support" / f"{queued['request_id']}.json"
     pending = runtime.calls_inbox_path / "requests" / "customer-support" / done.name
     shutil.copy(done, pending)
     process(gw, runtime.calls_inbox_path, master)

@@ -27,12 +27,13 @@ import os
 import re
 import secrets
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from nova.audit import new_correlation_id
 
 MASTER_KEY_NAME = "call-request.key"
 REQUESTS, RESULTS, DONE = "requests", "results", "done"
+DELEGATIONS, REPORTS = "delegations", "reports"
 _ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 #: Request files bigger than this are not requests.
 MAX_REQUEST_BYTES = 8192
@@ -68,15 +69,20 @@ def sign(key: str, payload: Mapping[str, Any]) -> str:
 
 
 def calling_grant(communications, agent: str, *, inbox: Path, master: bytes) -> Optional[dict]:
-    """What the agent's calling tool is configured with, or None when it may not call.
+    """What the agent's communications tools are configured with, or None when it may
+    neither request calls nor take part in delegation.
 
     The purposes are named so the model can pick one; the contact groups are not — an
     agent names a contact it was given, and the gateway decides whether it may be called.
     """
     profile = communications.profile(agent)
-    if profile is None or not profile.outbound:
+    calls = profile is not None and profile.outbound
+    routes = communications.delegation.routes
+    targets = routes.get(agent, ())
+    receives = any(agent in to for to in routes.values())
+    if not (calls or targets or receives):
         return None
-    return {
+    grant = {
         "version": 1,
         "agent_id": agent,
         "inbox": str(inbox),
@@ -84,8 +90,16 @@ def calling_grant(communications, agent: str, *, inbox: Path, master: bytes) -> 
         "purposes": [
             {"id": purpose, "description": communications.purposes[purpose].description}
             for purpose in profile.purposes
-        ],
+        ] if calls else [],
     }
+    if targets or receives:
+        grant["delegation"] = {
+            "may_delegate_to": list(targets),
+            "receives": receives,
+            "default_deadline_hours": communications.delegation.default_deadline_hours,
+            "max_deadline_hours": communications.delegation.max_deadline_hours,
+        }
+    return grant
 
 
 def calling_identity(communications, agent: str) -> Optional[dict]:
@@ -116,15 +130,76 @@ def _reject(gateway, results: Path, request_id: str, agent: str, reason: str) ->
     return body
 
 
+def _call(gateway, inbox: Path, agent: str, request_id: str, payload: Mapping[str, Any]) -> dict:
+    result = gateway.request_call(
+        agent=agent,
+        contact_id=str(payload.get("contact_id") or ""),
+        purpose=str(payload.get("purpose") or ""),
+        idempotency_key=f"agent:{agent}:{request_id}",
+        task_id=str(payload.get("task_id") or "")[:64],
+    )
+    body = _status(request_id, result.record)
+    gateway.audit.record("communications.agent_request.decided", correlation_id=new_correlation_id(),
+                         subject=result.record.call_id,
+                         detail={"agent": agent, "request_id": request_id,
+                                 "note": str(payload.get("note") or "")[:300],
+                                 "status": body["status"]})
+    return body
+
+
+def _delegation(gateway, inbox: Path, agent: str, request_id: str,
+                payload: Mapping[str, Any]) -> dict:
+    from nova.communications.delegation import delegate
+
+    expected = payload.get("expected") or []
+    hours = payload.get("deadline_hours")
+    return delegate(
+        gateway, delegation_id=request_id, sender=agent,
+        receiver=str(payload.get("to_agent") or ""), objective=str(payload.get("objective") or ""),
+        expected=expected if isinstance(expected, list) else [],
+        deadline_hours=hours if isinstance(hours, int) and not isinstance(hours, bool) else None,
+        contact_id=str(payload.get("contact_id") or ""), context=str(payload.get("context") or ""),
+        parent_task_id=str(payload.get("task_id") or "")[:64])
+
+
+def _report(gateway, inbox: Path, agent: str, request_id: str,
+            payload: Mapping[str, Any]) -> dict:
+    from nova.communications.delegation import report
+
+    delegation_id = str(payload.get("delegation_id") or "")
+    answer = report(gateway, delegation_id=delegation_id, reporter=agent,
+                    status=str(payload.get("status") or ""), result=payload.get("result"),
+                    note=str(payload.get("note") or ""))
+    # The delegator's own result file moves on at once, not at the next refresh.
+    record = gateway.store.delegation(delegation_id)
+    _write_result(inbox / RESULTS / record["from_agent"], delegation_id, answer)
+    return {"request_id": request_id, "status": "accepted", "delegation": answer}
+
+
+#: Spool directory -> what a verified request in it asks for. Each is decided exactly as the
+#: same request from anywhere else would be.
+SPOOLS: Mapping[str, Callable[..., dict]] = {
+    REQUESTS: _call,
+    DELEGATIONS: _delegation,
+    REPORTS: _report,
+}
+
+
 def process(gateway, inbox: Path, master: bytes) -> list[dict]:
-    """Decide every waiting request. Returns what was written back, one entry per request."""
+    """Decide every waiting request in every spool. Returns what was written back."""
     out: list[dict] = []
-    root = Path(inbox) / REQUESTS
-    if not root.is_dir():
-        return out
+    for spool, decide in SPOOLS.items():
+        root = Path(inbox) / spool
+        if root.is_dir():
+            out.extend(_drain(gateway, Path(inbox), root, master, decide))
+    return out
+
+
+def _drain(gateway, inbox: Path, root: Path, master: bytes, decide) -> list[dict]:
+    out: list[dict] = []
     for agent_dir in sorted(p for p in root.iterdir() if p.is_dir()):
         agent = agent_dir.name
-        results = Path(inbox) / RESULTS / agent
+        results = inbox / RESULTS / agent
         for path in sorted(agent_dir.glob("*.json")):
             request_id = path.stem
             try:
@@ -146,32 +221,17 @@ def process(gateway, inbox: Path, master: bytes) -> list[dict]:
                 out.append(_reject(gateway, results, request_id, agent,
                                    "the request does not match the inbox it was found in"))
             else:
-                out.append(_decide(gateway, results, agent, request_id, payload))
-            done = Path(inbox) / DONE / agent
+                try:
+                    body = decide(gateway, inbox, agent, request_id, payload)
+                except ValueError as exc:
+                    out.append(_reject(gateway, results, request_id, agent, str(exc)))
+                else:
+                    _write_result(results, request_id, body)
+                    out.append(body)
+            done = inbox / DONE / root.name / agent
             done.mkdir(parents=True, exist_ok=True)
             path.replace(done / path.name)
     return out
-
-
-def _decide(gateway, results: Path, agent: str, request_id: str, payload: Mapping[str, Any]) -> dict:
-    try:
-        result = gateway.request_call(
-            agent=agent,
-            contact_id=str(payload.get("contact_id") or ""),
-            purpose=str(payload.get("purpose") or ""),
-            idempotency_key=f"agent:{agent}:{request_id}",
-            task_id=str(payload.get("task_id") or "")[:64],
-        )
-    except ValueError as exc:
-        return _reject(gateway, results, request_id, agent, str(exc))
-    body = _status(request_id, result.record)
-    gateway.audit.record("communications.agent_request.decided", correlation_id=new_correlation_id(),
-                         subject=result.record.call_id,
-                         detail={"agent": agent, "request_id": request_id,
-                                 "note": str(payload.get("note") or "")[:300],
-                                 "status": body["status"]})
-    _write_result(results, request_id, body)
-    return body
 
 
 def _status(request_id: str, record) -> dict:
@@ -180,7 +240,9 @@ def _status(request_id: str, record) -> dict:
 
 
 def refresh(gateway, inbox: Path) -> int:
-    """Bring every unfinished result up to date with its call. Returns how many changed."""
+    """Bring every unfinished result up to date with its call or delegation."""
+    from nova.communications.delegation import view
+
     changed = 0
     root = Path(inbox) / RESULTS
     if not root.is_dir():
@@ -190,11 +252,15 @@ def refresh(gateway, inbox: Path) -> int:
             body = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        record = gateway.store.call(str(body.get("call_id") or "")) if body.get("call_id") else None
-        if record is None:
+        if body.get("call_id"):
+            record = gateway.store.call(str(body["call_id"]))
+            fresh = _status(body["request_id"], record) if record else None
+        elif body.get("delegation_id") and "to_agent" in body:
+            record = gateway.store.delegation(str(body["delegation_id"]))
+            fresh = view(record) if record else None
+        else:
             continue
-        fresh = _status(body["request_id"], record)
-        if fresh != body:
+        if fresh is not None and fresh != body:
             _write_result(path.parent, body["request_id"], fresh)
             changed += 1
     return changed

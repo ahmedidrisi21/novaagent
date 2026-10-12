@@ -519,15 +519,96 @@ it now also cancels callbacks and emails still waiting to reach that contact.
 - **No agent-initiated email yet.** Email goes out only as a call's follow-up. Agents
   drafting their own emails, inbound replies, and meeting booking are later work.
 
+## Phase 4b, part 2: agents hand work to each other, and one history
+
+```yaml
+communications:
+  delegation:
+    routes:
+      - { from: lead-research, to: [qualification] }
+      - { from: qualification, to: [sales, lead-research] }
+    max_depth: 3                 # delegations in one chain
+    max_open_per_agent: 10       # open work one agent may hold; more is refused
+    default_deadline_hours: 24
+    max_deadline_hours: 168
+    max_retries: 1               # the runtime's retries for a delegated task
+  actions:
+    rules:
+      handoff: { tier: auto, assignee: sales }   # needs a route from the calling agent
+```
+
+Delegation is a grant, like calling: without a route, no agent may hand work to another.
+
+| Tool | Who gets it | |
+|---|---|---|
+| `delegate_work(to_agent, objective, expected_fields, deadline_hours, contact_id, context)` | an agent with a route | `to_agent` is an enum of its routes |
+| `delegation_status(delegation_id)` | the same | requested, assigned, completed (with the result), needs_approval, blocked, failed, refused (with the reason), expired |
+| `report_delegation(delegation_id, status, result, note)` | an agent some route reaches | only the receiver may answer |
+
+They come with the calling tools in the same signed plugin (`nova-calling`, toolset
+`nova_delegation`), so delegation travels through the same signed inbox as call requests.
+The gateway checks each request, in order, before anything reaches the board:
+
+1. **The route** is one the tenant declared.
+2. **Depth.** A delegation made while working on delegated work is one deeper than that
+   work. Past `max_depth` it is refused.
+3. **No cycles.** A receiver already in the chain is refused. A → B → A never happens,
+   even when the route B → A exists.
+4. **Budget.** A receiver already holding `max_open_per_agent` open delegations is refused.
+5. **A deadline** within `max_deadline_hours`. The sweep expires delegations that pass it.
+
+What passes becomes one work item for the receiver, keyed by the delegation id, so it is
+placed once however often the request is picked up. The work item states:
+
+- the objective, the deadline and the expected result fields;
+- how to report back;
+- that the delegator's context is information, not instructions, and that the receiver
+  acts only within its own grants.
+
+A report is accepted only from the receiver, only while the delegation is open, and a
+`completed` report only with every field asked for.
+
+**Handoff after a call.** The `handoff` action kind hands a call's contact to another agent
+(a qualified lead for sales, say). It is a delegation like any other: same route, depth,
+cycle and budget checks, linked to the call it came from.
+
+### One history
+
+`nova calls history BUNDLE [--contact] [--agent] [--channel call|email|action|delegation]
+[--status] [--task] [--since] [--until]` and `GET /communications/history` (admin) show
+one timeline, newest first: calls, the actions and emails they led to, and delegations.
+Each row gives time, status, agent, provider, contact, task, who approved it, and why it
+ended where it did.
+
+- **Metadata only.** No transcript, no email text, no recording, no delegation result. Those
+  stay behind the per-call routes, so a timeline can be shared more widely than its
+  content.
+- **Linked by task.** A call carries the task its agent was working on. A delegation carries
+  the task it was made from and the task it created. Actions and emails belong to their
+  call. `--task` shows one piece of work end to end.
+
+| Surface | |
+|---|---|
+| `nova calls delegations BUNDLE [--status] [--agent]` | delegations, with depth, deadline and reason |
+| `GET /communications/delegations` | admin |
+
+### Limits, stated plainly
+
+- **Cost is not on the timeline yet.** Usage and cost per event is Phase 5's reconciliation
+  work.
+- **Delegation runs through `nova calls serve`**, the process that already drains the
+  agents' signed inbox. Agents delegate within one tenant and one deployment.
+- **The boundary is the one calling rests on.** Agents are separated by the operating-system
+  boundary between their profiles. An agent that can read another's profile could sign as
+  it.
+
 ## Not built yet, in the order it lands
 
 1. **Next:** a first live call on a test number, and a first live email.
 2. **Legal sign-off of the consent rule per launch market**, then switching recording on
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
-3. **Phase 4b, part 2:** agent-to-agent delegation (a qualified lead handed to a sales agent,
-   with depth, budget and cycle limits), unified communication history across calls,
-   emails and delegations, and agent-drafted email.
+3. **Agent-drafted email**, inbound replies and meeting booking.
 4. **Phase 5:** Bedrock Nova Sonic, ElevenLabs Agents if the benchmark justifies it, mid-call
    failover, cost reconciliation.
 

@@ -147,12 +147,16 @@ class ActionsStoreMixin:
             f"SELECT {', '.join(ACTION_KEYS)} FROM call_actions WHERE tenant_id = ? "
             "AND action_id = ?", self.tenant_id, action_id))
 
-    def actions(self, *, call_id: str = "", status: str = "", limit: int = 200) -> list[dict]:
+    def actions(self, *, call_id: str = "", status: str = "", contact_id: str = "",
+                limit: int = 200) -> list[dict]:
         sql = f"SELECT {', '.join(ACTION_KEYS)} FROM call_actions WHERE tenant_id = ?"
         args: list[Any] = [self.tenant_id]
         if call_id:
             sql += " AND call_id = ?"
             args.append(call_id)
+        if contact_id:
+            sql += " AND contact_id = ?"
+            args.append(contact_id)
         if status:
             sql += " AND status = ?"
             args.append(status)
