@@ -15,6 +15,7 @@ on every call, without a model and without a tier.
 
 from __future__ import annotations
 
+import re
 import string
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
@@ -84,6 +85,27 @@ class ActionRule:
         return out
 
 
+EMAIL_APPROVAL = ("always", "first_contact", "never")
+_DOMAIN = re.compile(r"^(?=.{4,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
+
+
+@dataclass(frozen=True)
+class EmailGrant:
+    """One agent's grant to write emails itself: for which purposes, to which contact
+    groups, how many a day, and whether a person approves each one first."""
+
+    agent: str
+    purposes: tuple[str, ...]
+    contact_groups: tuple[str, ...]
+    approval: str = "always"
+    max_per_day: int = 20
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"agent": self.agent, "purposes": list(self.purposes),
+                "contact_groups": list(self.contact_groups), "approval": self.approval,
+                "max_per_day": self.max_per_day}
+
+
 @dataclass(frozen=True)
 class EmailSpec:
     """The sender. Credentials live with the gateway (``RESEND_API_KEY``)."""
@@ -95,13 +117,22 @@ class EmailSpec:
     max_auto_per_contact_per_day: int = 1
     #: Days the sent text is kept. 0 keeps only the subject and delivery state.
     keep_body_days: int = 30
+    #: A domain whose mail the provider receives (Resend inbound). Set, every email's
+    #: reply address is ``reply+<signed id>@<domain>`` and replies reach the agent.
+    reply_domain: str = ""
+    #: Agents that may write their own emails to contacts, and on what terms.
+    agents: tuple["EmailGrant", ...] = ()
+
+    def grant(self, agent: str) -> Optional["EmailGrant"]:
+        return next((g for g in self.agents if g.agent == agent), None)
 
     def to_dict(self) -> dict[str, Any]:
         if not self.provider:
             return {}
         return {"provider": self.provider, "from": self.sender, "reply_to": self.reply_to,
                 "max_auto_per_contact_per_day": self.max_auto_per_contact_per_day,
-                "keep_body_days": self.keep_body_days}
+                "keep_body_days": self.keep_body_days, "reply_domain": self.reply_domain,
+                "agents": [g.to_dict() for g in self.agents]}
 
 
 @dataclass(frozen=True)
@@ -195,11 +226,35 @@ def parse_email(doc: Optional[Doc], *, allow_test: bool) -> EmailSpec:
     if "@" not in sender:
         raise SpecError("must be the sender address, e.g. Acme <support@acme.example>",
                         field="communications.email.from", source=doc.source)
+    reply_domain = doc.str_("reply_domain").lower()
+    if reply_domain and not _DOMAIN.match(reply_domain):
+        raise SpecError("must be a domain the email provider receives mail for",
+                        field="communications.email.reply_domain", source=doc.source)
+    raw = doc._raw("agents") or []
+    if not isinstance(raw, list):
+        raise SpecError("must be a list", field="communications.email.agents", source=doc.source)
+    grants = []
+    for index, item in enumerate(raw):
+        where = f"communications.email.agents[{index}]"
+        grant_doc = Doc(item, source=doc.source, prefix=where)
+        grant = EmailGrant(
+            agent=grant_doc.identifier("agent"), purposes=tuple(grant_doc.str_list("purposes")),
+            contact_groups=tuple(grant_doc.str_list("contact_groups")),
+            approval=grant_doc.choice("approval", EMAIL_APPROVAL, default="always") or "always",
+            max_per_day=grant_doc.int_("max_per_day", default=20, minimum=1, maximum=1000))
+        grant_doc.reject_unknown()
+        if not (grant.purposes and grant.contact_groups):
+            raise SpecError("purposes and contact_groups are required: an agent that may email "
+                            "anyone about anything is not a grant", field=where, source=doc.source)
+        if any(g.agent == grant.agent for g in grants):
+            raise SpecError(f"{grant.agent!r} has two email grants", field=where, source=doc.source)
+        grants.append(grant)
     spec = EmailSpec(
         provider=provider_id, sender=sender, reply_to=doc.str_("reply_to"),
         max_auto_per_contact_per_day=doc.int_("max_auto_per_contact_per_day", default=1,
                                               minimum=0, maximum=10),
         keep_body_days=doc.int_("keep_body_days", default=30, minimum=0, maximum=3650),
+        reply_domain=reply_domain, agents=tuple(grants),
     )
     doc.reject_unknown()
     return spec

@@ -2,16 +2,17 @@
 
 The CSV is what a CRM exports. Columns:
 
-=========================  ===============================================================
-``contact_id``             required; the CRM's id, the name agents use
-``phone``                  required; E.164
-``timezone``               required; IANA (``America/Chicago``) — calling hours depend on it
-``groups``                 required; ``;``-separated, matched against agents' grants
-``ai_voice_consent``       optional; **evidence** of AI-voice consent (form id, URL, call id)
-``marketing_consent``      optional; evidence of prior express *written* marketing consent
-``name``                   optional; how a follow-up email greets them
-``email``                  optional; the only address a follow-up email is ever sent to
-=========================  ===============================================================
+=============================  ===============================================================
+``contact_id``                 required; the CRM's id, the name agents use
+``phone``                      required; E.164
+``timezone``                   required; IANA (``America/Chicago``) — calling hours depend on it
+``groups``                     required; ``;``-separated, matched against agents' grants
+``ai_voice_consent``           optional; **evidence** of AI-voice consent (form id, URL, call id)
+``marketing_consent``          optional; evidence of prior express *written* marketing consent
+``email_marketing_consent``    optional; evidence of consent to marketing email
+``name``                       optional; how a follow-up email greets them
+``email``                      optional; the only address a follow-up email is ever sent to
+=============================  ===============================================================
 
 A consent column holds evidence, never ``yes``: consent nobody can show is consent nobody
 has. A blank consent cell grants nothing and revokes nothing — revoking is a separate,
@@ -29,11 +30,17 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from nova.audit import AuditLog, new_correlation_id
 from nova.communications.gate import Contact
-from nova.communications.spec import CONSENT_AI_VOICE, CONSENT_MARKETING_WRITTEN, E164
+from nova.communications.spec import (
+    CONSENT_AI_VOICE,
+    CONSENT_EMAIL_MARKETING,
+    CONSENT_MARKETING_WRITTEN,
+    E164,
+)
 from nova.communications.store import CommsStore
 
 REQUIRED = ("contact_id", "phone", "timezone", "groups")
-CONSENT_COLUMNS = {"ai_voice_consent": CONSENT_AI_VOICE, "marketing_consent": CONSENT_MARKETING_WRITTEN}
+CONSENT_COLUMNS = {"ai_voice_consent": CONSENT_AI_VOICE, "marketing_consent": CONSENT_MARKETING_WRITTEN,
+                   "email_marketing_consent": CONSENT_EMAIL_MARKETING}
 _BARE_YES = {"yes", "y", "true", "1", "x", "ok"}
 EMAIL = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$")
 

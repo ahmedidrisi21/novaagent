@@ -90,7 +90,9 @@ usage, cost and a hard monthly budget that counts calls on the line (`usage.py`)
 mid-call engine failover through the carrier (`CallGateway.engine_failed`),
 a Telnyx Call Control carrier driven by command (`telnyx.py`; Ed25519 webhooks through
 `ed25519.py`, which alone may borrow `cryptography`) and ElevenLabs Agents over the media
-bridge (`elevenlabs.py`), a counts-only weekly digest (`insights.py`),
+bridge (`elevenlabs.py`), a counts-only weekly digest (`insights.py`), email agents
+write themselves behind the email gate (`agent_email.py`) and replies matched by a
+signed reply address and handed back as untrusted text (`replies.py`),
 and the internet-facing webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.

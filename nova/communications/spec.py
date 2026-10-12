@@ -54,7 +54,9 @@ APPROVAL_MODES = ("always", "first_contact", "never")
 #: by an agent; ``marketing_written`` additionally for a marketing purpose.
 CONSENT_AI_VOICE = "ai_voice"
 CONSENT_MARKETING_WRITTEN = "marketing_written"
-CONSENT_KINDS = (CONSENT_AI_VOICE, CONSENT_MARKETING_WRITTEN)
+#: Needed for an email an agent writes for a marketing purpose.
+CONSENT_EMAIL_MARKETING = "email_marketing"
+CONSENT_KINDS = (CONSENT_AI_VOICE, CONSENT_MARKETING_WRITTEN, CONSENT_EMAIL_MARKETING)
 
 
 FIELD_KINDS = ("text", "number", "boolean", "date", "choice")
@@ -551,6 +553,12 @@ def parse_communications(
             )
         purposes[purpose.id] = purpose
 
+    for index, grant in enumerate(email.agents):
+        for purpose in grant.purposes:
+            if purpose not in purposes:
+                raise SpecError(f"{purpose!r} is not a declared purpose",
+                                field=f"communications.email.agents[{index}].purposes",
+                                source=source)
     so_far = {
         "voice_providers": voice,
         "telephony_providers": telephony,
@@ -679,6 +687,10 @@ def load_communications(
 
 def check_agents_exist(spec: CommunicationsSpec, agent_ids: Sequence[str]) -> None:
     known = set(agent_ids)
+    for grant in spec.email.agents:
+        if grant.agent not in known:
+            raise SpecError(f"email grant for {grant.agent!r}, which this bundle does not define",
+                            field="communications.email.agents")
     if spec.insights.assignee and spec.insights.assignee not in known:
         raise SpecError(f"the weekly digest goes to {spec.insights.assignee!r}, which this bundle "
                         "does not define", field="communications.insights.assignee")

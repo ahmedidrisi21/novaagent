@@ -30,7 +30,13 @@ from nova.communications.contracts import (
     TelephonyProvider,
     VoiceSessionRequest,
 )
-from nova.communications.mail import EmailEvent, EmailProvider, EmailStatus, OutboundEmail
+from nova.communications.mail import (
+    EmailEvent,
+    EmailProvider,
+    EmailStatus,
+    InboundEmail,
+    OutboundEmail,
+)
 
 SIGNATURE_HEADER = "x-mock-signature"
 
@@ -252,6 +258,7 @@ class MockEmail(EmailProvider):
         #: idempotency key -> (provider ref, message). One entry per distinct send.
         self.sent: dict[str, tuple[str, OutboundEmail]] = {}
         self.fail_next = False
+        self.received: dict[str, InboundEmail] = {}
 
     def send(self, message: OutboundEmail) -> str:
         if self.fail_next:
@@ -266,8 +273,28 @@ class MockEmail(EmailProvider):
 
     def parse(self, headers: Mapping[str, str], body: bytes) -> list[EmailEvent]:
         data = json.loads(body.decode("utf-8"))
+        if data.get("type") == "inbound":
+            return []
         return [EmailEvent(provider_event_id=str(data["event_id"]), provider_ref=str(data["ref"]),
                            status=EmailStatus(data["status"]))]
+
+    def parse_inbound(self, headers: Mapping[str, str], body: bytes) -> Optional[InboundEmail]:
+        data = json.loads(body.decode("utf-8"))
+        if data.get("type") != "inbound":
+            return None
+        return InboundEmail(str(data["ref"]), str(data["from"]), tuple(data["to"]),
+                            str(data.get("subject", "")))
+
+    def fetch_inbound(self, provider_ref: str) -> InboundEmail:
+        return self.received[provider_ref]
+
+    def inbound(self, ref: str, *, sender: str, to: str, subject: str,
+                text: str) -> tuple[dict, bytes]:
+        """A signed received-mail webhook, with the message held for :meth:`fetch_inbound`."""
+        self.received[ref] = InboundEmail(ref, sender, (to,), subject, text)
+        body = json.dumps({"type": "inbound", "ref": ref, "from": sender, "to": [to],
+                           "subject": subject}).encode()
+        return {SIGNATURE_HEADER: _sign(self._secret, body)}, body
 
     def event(self, ref: str, status: EmailStatus, *, event_id: str) -> tuple[dict, bytes]:
         """A signed delivery webhook, as the provider would send it."""

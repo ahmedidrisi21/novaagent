@@ -33,7 +33,7 @@ from nova.audit import new_correlation_id
 
 MASTER_KEY_NAME = "call-request.key"
 REQUESTS, RESULTS, DONE = "requests", "results", "done"
-DELEGATIONS, REPORTS = "delegations", "reports"
+DELEGATIONS, REPORTS, EMAILS = "delegations", "reports", "emails"
 _ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 #: Request files bigger than this are not requests.
 MAX_REQUEST_BYTES = 8192
@@ -80,7 +80,8 @@ def calling_grant(communications, agent: str, *, inbox: Path, master: bytes) -> 
     routes = communications.delegation.routes
     targets = routes.get(agent, ())
     receives = any(agent in to for to in routes.values())
-    if not (calls or targets or receives):
+    email = communications.email.grant(agent)
+    if not (calls or targets or receives or email):
         return None
     grant = {
         "version": 1,
@@ -99,6 +100,10 @@ def calling_grant(communications, agent: str, *, inbox: Path, master: bytes) -> 
             "default_deadline_hours": communications.delegation.default_deadline_hours,
             "max_deadline_hours": communications.delegation.max_deadline_hours,
         }
+    if email is not None:
+        grant["email"] = {"purposes": [
+            {"id": purpose, "description": communications.purposes[purpose].description}
+            for purpose in email.purposes]}
     return grant
 
 
@@ -162,6 +167,18 @@ def _delegation(gateway, inbox: Path, agent: str, request_id: str,
         parent_task_id=str(payload.get("task_id") or "")[:64])
 
 
+def _email(gateway, inbox: Path, agent: str, request_id: str,
+           payload: Mapping[str, Any]) -> dict:
+    from nova.communications.agent_email import request_email
+
+    return request_email(gateway, agent=agent, request_id=request_id,
+                         contact_id=str(payload.get("contact_id") or ""),
+                         purpose=str(payload.get("purpose") or ""),
+                         subject=str(payload.get("subject") or ""),
+                         body=str(payload.get("body") or ""),
+                         task_id=str(payload.get("task_id") or ""))
+
+
 def _report(gateway, inbox: Path, agent: str, request_id: str,
             payload: Mapping[str, Any]) -> dict:
     from nova.communications.delegation import report
@@ -182,6 +199,7 @@ SPOOLS: Mapping[str, Callable[..., dict]] = {
     REQUESTS: _call,
     DELEGATIONS: _delegation,
     REPORTS: _report,
+    EMAILS: _email,
 }
 
 
@@ -240,7 +258,7 @@ def _status(request_id: str, record) -> dict:
 
 
 def refresh(gateway, inbox: Path) -> int:
-    """Bring every unfinished result up to date with its call or delegation."""
+    """Bring every unfinished result up to date with its call, delegation or email."""
     from nova.communications.delegation import view
 
     changed = 0
@@ -258,6 +276,11 @@ def refresh(gateway, inbox: Path) -> int:
         elif body.get("delegation_id") and "to_agent" in body:
             record = gateway.store.delegation(str(body["delegation_id"]))
             fresh = view(record) if record else None
+        elif "email_id" in body and body.get("status") in ("awaiting_approval", "sending", "new"):
+            from nova.communications.agent_email import view as email_view
+
+            request = gateway.store.email_request(str(body["request_id"]))
+            fresh = email_view(request) if request else None
         else:
             continue
         if fresh is not None and fresh != body:

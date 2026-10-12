@@ -40,6 +40,9 @@ DELEGATE_TOOL = "delegate_work"
 DELEGATION_STATUS_TOOL = "delegation_status"
 REPORT_TOOL = "report_delegation"
 REPORT_STATUSES = ("completed", "needs_approval", "blocked", "failed")
+EMAIL_TOOLSET = "nova_email"
+EMAIL_TOOL = "send_email"
+EMAIL_STATUS_TOOL = "email_status"
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 _CACHE: Dict[str, Any] = {}
@@ -58,7 +61,8 @@ def _load_config() -> Optional[Dict[str, Any]]:
         if path.is_file():
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict) and loaded.get("key") and (
-                    loaded.get("purposes") or isinstance(loaded.get("delegation"), dict)):
+                    loaded.get("purposes") or isinstance(loaded.get("delegation"), dict)
+                    or isinstance(loaded.get("email"), dict)):
                 config = loaded
     except (OSError, ValueError):
         config = None
@@ -254,6 +258,79 @@ def _schemas(config: Dict[str, Any]) -> tuple:
     return request, status
 
 
+def _email_purposes(config: Optional[Dict[str, Any]]) -> list:
+    grant = (config or {}).get("email")
+    if not isinstance(grant, dict):
+        return []
+    return [str(p.get("id")) for p in grant.get("purposes", []) if isinstance(p, dict) and p.get("id")]
+
+
+def handle_send_email(args: Dict[str, Any], **_kwargs: Any) -> str:
+    """Ask for an email to a contact. Never raises into the agent loop."""
+    config = _load_config()
+    purposes = _email_purposes(config)
+    if not purposes:
+        return _reply(status="unavailable", message="This agent may not send email.")
+    contact_id = str(args.get("contact_id") or "").strip()
+    purpose = str(args.get("purpose") or "").strip()
+    subject = " ".join(str(args.get("subject") or "").split())
+    body = str(args.get("body") or "").strip()
+    if not contact_id or len(contact_id) > 128:
+        return _reply(status="refused", message="contact_id is required: the CRM id of the contact.")
+    if purpose not in purposes:
+        return _reply(status="refused", message=f"purpose must be one of: {', '.join(purposes)}")
+    if not (subject and body):
+        return _reply(status="refused", message="subject and body are required.")
+    request_id, problem = _spool(config, "emails", {
+        "contact_id": contact_id, "purpose": purpose, "subject": subject[:200],
+        "body": body[:10000]})
+    if problem:
+        return problem
+    return _reply(status="queued", request_id=request_id,
+                  message=("Requested. The gateway sends it to the address on file only if the "
+                           "contact may be emailed, and a person may need to approve it first. "
+                           "Check with email_status; do not say it was sent until it says so."))
+
+
+def handle_email_status(args: Dict[str, Any], **_kwargs: Any) -> str:
+    config = _load_config()
+    if not _email_purposes(config):
+        return _reply(status="unavailable", message="This agent may not send email.")
+    request_id = str(args.get("request_id") or "").strip()
+    if not _ID.match(request_id):
+        return _reply(status="refused", message="request_id is the id send_email returned.")
+    return _read_result(config, request_id)
+
+
+def _email_schemas(config: Dict[str, Any]) -> tuple:
+    send = {
+        "name": EMAIL_TOOL,
+        "description": (
+            "Ask for an email to a contact, for one of your approved purposes. Name the contact "
+            "by its CRM id; it goes to the address on file, never to one you supply. The "
+            "gateway checks opt-outs, consent and limits, and a person may approve it first. "
+            "Plain text only; an unsubscribe line is added for you."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contact_id": {"type": "string", "description": "The contact's CRM id."},
+                "purpose": {"type": "string", "enum": _email_purposes(config)},
+                "subject": {"type": "string", "description": "One line."},
+                "body": {"type": "string", "description": "The message, plain text."},
+            },
+            "required": ["contact_id", "purpose", "subject", "body"],
+        },
+    }
+    status = {
+        "name": EMAIL_STATUS_TOOL,
+        "description": "Where an email you asked for stands: waiting for approval, sent, "
+                       "blocked (with the reason), rejected or failed.",
+        "parameters": {"type": "object", "properties": {"request_id": {"type": "string"}},
+                       "required": ["request_id"]},
+    }
+    return send, status
+
+
 def _delegation_schemas(grant: Dict[str, Any]) -> tuple:
     targets = [str(t) for t in grant.get("may_delegate_to") or []]
     delegate = {
@@ -318,6 +395,15 @@ def register(ctx: Any) -> None:
         ctx.register_tool(name=STATUS_TOOL, toolset=TOOLSET, schema=status,
                           handler=handle_call_status,
                           description="See where a requested call stands.", emoji="📞")
+    if _email_purposes(config):
+        send, status = _email_schemas(config)
+        ctx.register_tool(name=EMAIL_TOOL, toolset=EMAIL_TOOLSET, schema=send,
+                          handler=handle_send_email,
+                          description="Ask for an email to a contact; the gateway decides.",
+                          emoji="✉️")
+        ctx.register_tool(name=EMAIL_STATUS_TOOL, toolset=EMAIL_TOOLSET, schema=status,
+                          handler=handle_email_status,
+                          description="See where a requested email stands.", emoji="✉️")
     grant = _delegation(config)
     if not grant:
         return

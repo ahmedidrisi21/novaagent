@@ -12,16 +12,30 @@ https://resend.com/docs/dashboard/webhooks/event-types.
 
 from __future__ import annotations
 
+import html
 import json
+import re
 import time
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Optional
 
 from nova.communications import signing
 from nova.communications.contracts import ProviderError
 from nova.communications.http import Transport, urllib_transport
-from nova.communications.mail import EmailEvent, EmailProvider, EmailStatus, OutboundEmail
+from nova.communications.mail import (
+    EmailEvent,
+    EmailProvider,
+    EmailStatus,
+    InboundEmail,
+    OutboundEmail,
+)
 
 DEFAULT_BASE_URL = "https://api.resend.com"
+_TAGS = re.compile(r"<[^>]+>")
+
+
+def _strip_html(markup: str) -> str:
+    """Text from an HTML-only reply: tags dropped, entities decoded. Never rendered."""
+    return html.unescape(_TAGS.sub(" ", re.sub(r"(?i)<br\s*/?>|</p>", "\n", markup)))
 #: The tag carrying our email id, so an event names its message even before we stored
 #: Resend's id for it.
 EMAIL_TAG = "nova_email_id"
@@ -88,6 +102,40 @@ class ResendEmail(EmailProvider):
 
     def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
         return signing.verify(self._secret, headers, body, now=self._clock(), prefix="svix")
+
+    def parse_inbound(self, headers: Mapping[str, str], body: bytes) -> Optional[InboundEmail]:
+        """``email.received`` carries only metadata; :meth:`fetch_inbound` reads the text."""
+        try:
+            event = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(event, dict) or event.get("type") != "email.received":
+            return None
+        data = event.get("data") or {}
+        to = data.get("to") if isinstance(data.get("to"), list) else [data.get("to") or ""]
+        return InboundEmail(provider_ref=str(data.get("email_id") or ""),
+                            sender=str(data.get("from") or ""),
+                            to=tuple(str(a) for a in to if a),
+                            subject=str(data.get("subject") or ""))
+
+    def fetch_inbound(self, provider_ref: str) -> InboundEmail:
+        try:
+            status, body = self._transport(
+                "GET", f"{self._base}/emails/receiving/{provider_ref}",
+                {"Authorization": f"Bearer {self._key}"}, None)
+        except OSError as exc:
+            raise ProviderError(f"Resend could not be reached: {exc}") from exc
+        if not 200 <= status < 300:
+            raise ProviderError(f"Resend could not return the received email ({status})")
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ProviderError(f"unreadable received email: {exc}") from exc
+        text = data.get("text") or _strip_html(str(data.get("html") or ""))
+        to = data.get("to") if isinstance(data.get("to"), list) else []
+        return InboundEmail(provider_ref=provider_ref, sender=str(data.get("from") or ""),
+                            to=tuple(str(a) for a in to), subject=str(data.get("subject") or ""),
+                            text=str(text or ""))
 
     def parse(self, headers: Mapping[str, str], body: bytes) -> list[EmailEvent]:
         try:

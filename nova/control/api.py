@@ -77,7 +77,7 @@ def _write_route(tail: str) -> Optional[str]:
     # /communications/calls/<id>/decide, /communications/calls/<id>/plan and
     # /communications/reviews/<id>/decide.
     if len(parts) == 4 and parts[0] == "communications" and (parts[1], parts[3]) in (
-            ("calls", "decide"), ("calls", "plan"), ("reviews", "decide")):
+            ("calls", "decide"), ("calls", "plan"), ("reviews", "decide"), ("emails", "decide")):
         return f"/communications/{parts[1]}/{parts[3]}"
     # Collection-level create: POST /automations. Declaring a new governed object is an
     # act on the collection, not on a member that does not exist yet.
@@ -200,6 +200,10 @@ class ControlAPI:
             from nova.control.api_calls import decide_review
 
             return decide_review(self, tail, principal, payload)
+        if route == "/communications/emails/decide":
+            from nova.control.api_calls import decide_email
+
+            return decide_email(self, tail, principal, payload)
         if route == "/communications/calls/plan":
             from nova.control.api_calls import decide_plan
 
@@ -356,6 +360,10 @@ class ControlAPI:
             from nova.control.api_calls import history
 
             return history(self, query)
+        if tail == "/communications/emails":
+            from nova.control.api_calls import list_emails
+
+            return list_emails(self, query)
         if tail == "/communications/insights":
             from nova.control.api_calls import insights
 
