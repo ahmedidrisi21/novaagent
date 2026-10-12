@@ -88,16 +88,19 @@ agent-to-agent delegation along declared routes with depth, cycle, budget and de
 checks (`delegation.py`), one metadata-only history across all of it (`history.py`),
 usage, cost and a hard monthly budget that counts calls on the line (`usage.py`), and
 mid-call engine failover through the carrier (`CallGateway.engine_failed`),
+a Telnyx Call Control carrier driven by command (`telnyx.py`; Ed25519 webhooks through
+`ed25519.py`, which alone may borrow `cryptography`) and ElevenLabs Agents over the media
+bridge (`elevenlabs.py`),
 and the internet-facing webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.
 
 Dependencies are the standard library and PyYAML. **Do not add a third.** The layer must
 import and test without the runtime installed; `tests/platform/test_boundaries.py`
-enforces it. Two modules may *lazily* borrow a package the deployment already has, each
+enforces it. Three modules may *lazily* borrow a package the deployment already has, each
 listed in `OPTIONAL_CAPABILITY_IMPORTS` with a test proving it degrades with a message:
-`knowledge/origin.py` (boto3) and `communications/ws.py` (the runtime's pinned
-`websockets`). Every other module reaches WebSockets through `ws.py`, never directly.
+`knowledge/origin.py` (boto3), `communications/ws.py` (the runtime's pinned
+`websockets`) and `communications/ed25519.py` (the runtime's pinned `cryptography`). Every other module reaches WebSockets through `ws.py`, never directly.
 
 ## Never name the package `platform/`
 

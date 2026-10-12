@@ -23,9 +23,11 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 from nova._fields import Doc
+from nova.channels.providers import Verification
 from nova.communications.providers import Kind, get_provider
 from nova.communications.spec_budget import BudgetSpec, parse_budget
 from nova.communications.spec_delegation import DelegationSpec, parse_delegation
+from nova.communications.spec_vendors import VendorSpec, parse_vendors
 from nova.communications.spec_actions import (
     ActionsSpec,
     EmailSpec,
@@ -282,6 +284,7 @@ class CommunicationsSpec:
     email: EmailSpec = field(default_factory=EmailSpec)
     delegation: DelegationSpec = field(default_factory=DelegationSpec)
     budget: BudgetSpec = field(default_factory=BudgetSpec)
+    vendors: VendorSpec = field(default_factory=VendorSpec)
 
     @property
     def declared(self) -> bool:
@@ -309,6 +312,7 @@ class CommunicationsSpec:
             "email": self.email.to_dict(),
             "delegation": self.delegation.to_dict(),
             "budget": self.budget.to_dict(),
+            **self.vendors.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -415,6 +419,10 @@ def _profile(doc: Doc, index: int, spec_so_far: Mapping[str, Any]) -> CallingPro
     if not groups:
         raise fail("contact_groups", "is required — name the contact groups this agent may call")
 
+    recording = _recording(doc.child("recording"), where)
+    if recording.enabled and not _records(telephony):
+        raise fail("recording", f"{telephony!r} cannot record through NOVA yet; record through "
+                                "a carrier whose adapter records, or leave recording off")
     profile = CallingProfile(
         agent=agent,
         outbound=doc.bool_("outbound", default=True),
@@ -427,11 +435,21 @@ def _profile(doc: Doc, index: int, spec_so_far: Mapping[str, Any]) -> CallingPro
         max_call_seconds=doc.int_("max_call_seconds", default=300, minimum=30, maximum=3600),
         max_concurrent_calls=doc.int_("max_concurrent_calls", default=1, minimum=1, maximum=100),
         max_calls_per_day=doc.int_("max_calls_per_day", default=20, minimum=1, maximum=10000),
-        recording=_recording(doc.child("recording"), where),
+        recording=recording,
         keep_transcript_days=doc.int_("keep_transcript_days", default=0, minimum=0, maximum=3650),
     )
     doc.reject_unknown()
     return profile
+
+
+def _records(carrier: str) -> bool:
+    """Whether this carrier's adapter records — implemented and exercised, not only vendor-
+    documented. Asked of the catalogue, so a new adapter says so in one place."""
+    provider = get_provider(carrier)
+    if provider is None:
+        return False
+    capability = provider.capability("recording")
+    return capability.supported is True and capability.verification is not Verification.DECLARED
 
 
 def _recording(doc: Optional[Doc], where: str) -> RecordingSpec:
@@ -490,6 +508,8 @@ def parse_communications(
     actions = parse_actions(doc.child("actions"))
     email = parse_email(doc.child("email"), allow_test=allow_test)
     delegation = parse_delegation(doc.child("delegation"))
+    vendors = parse_vendors(doc.child("telnyx"), doc.child("elevenlabs"), telephony=telephony,
+                            voice=voice, source=source)
     budget = parse_budget(doc.child("budget"), providers={
         *voice, *telephony, *((email.provider,) if email.provider else ())})
     purposes: dict[str, Purpose] = {}
@@ -630,6 +650,7 @@ def parse_communications(
         email=email,
         delegation=delegation,
         budget=budget,
+        vendors=vendors,
     )
 
 

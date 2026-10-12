@@ -360,7 +360,24 @@ class CallGateway:
 
     # -- carrier callbacks --------------------------------------------------------------
 
+    def respond(self, carrier: TelephonyProvider, ref: str, plan: AnswerPlan) -> AnswerResponse:
+        """Tell the carrier what the call does next: as the webhook's answer document, or —
+        for a carrier driven by commands — by carrying the plan out on the live call."""
+        if not carrier.follows_commands:
+            return AnswerResponse(200, *carrier.render_answer(plan))
+        if ref:
+            try:
+                carrier.redirect(ref, plan)
+            except ProviderError as exc:
+                self.audit.record("communications.call.command_failed",
+                                  correlation_id=new_correlation_id(), subject=ref,
+                                  detail={"carrier": carrier.id}, error=str(exc))
+        return AnswerResponse(200, body=b"ok")
+
     def _find(self, carrier: TelephonyProvider, event: ProviderEvent) -> Optional[CallRecord]:
+        if not event.provider_call_ref:
+            record = self.store.call(event.call_id_hint) if event.call_id_hint else None
+            return record if record is not None and record.telephony == carrier.id else None
         record = self.store.call_by_ref(carrier.id, event.provider_call_ref)
         if record is None and event.call_id_hint:
             record = self.store.call_for_carrier(carrier.id, event.call_id_hint, event.provider_call_ref)
@@ -422,7 +439,7 @@ class CallGateway:
             return AnswerResponse(error.http_status, body=error.reason.encode("utf-8"))
 
         def hang_up() -> AnswerResponse:
-            return AnswerResponse(200, *carrier.render_answer(AnswerPlan(hang_up=True)))
+            return self.respond(carrier, event.provider_call_ref, AnswerPlan(hang_up=True))
 
         record = self._find(carrier, event)
         if record is None:
@@ -455,7 +472,7 @@ class CallGateway:
                               consent=ConsentPrompt(record.call_id, self.spec.consent_prompt))
             self.audit.record("communications.call.answered", correlation_id=correlation,
                               subject=record.call_id, detail={"asking_consent": True})
-            return AnswerResponse(200, *carrier.render_answer(plan))
+            return self.respond(carrier, record.provider_call_ref, plan)
 
         plan = self.bridge_plan(record, profile, say=self.spec.disclosure)
         if plan is None:
@@ -463,7 +480,7 @@ class CallGateway:
         self.audit.record("communications.call.answered", correlation_id=correlation,
                           subject=record.call_id,
                           detail={"voice_engine": self.store.call(record.call_id).voice_engine})
-        return AnswerResponse(200, *carrier.render_answer(plan))
+        return self.respond(carrier, record.provider_call_ref, plan)
 
     def bridge_plan(self, record: CallRecord, profile, *, say: str) -> Optional[AnswerPlan]:
         """Connect an answered call to its voice engine. None (and the call failed) when no

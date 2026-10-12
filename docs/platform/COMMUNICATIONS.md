@@ -663,18 +663,88 @@ stream dies), the gateway moves the live call to the agent's next engine:
   minutes it is skipped while another engine is configured, and comes back once the window
   passes.
 
+## Phase 5, part 2: Telnyx and ElevenLabs Agents
+
+```yaml
+communications:
+  telephony_providers: [twilio, telnyx]
+  voice_providers: [openai-live, elevenlabs-agents]
+  telnyx: { connection_id: "1234567890" }        # the Call Control application
+  elevenlabs:
+    agent_id: agent_xxxxxxxxxxxx
+    host: api.eu.residency.elevenlabs.io          # optional: a data-residency region
+  agents:
+    - agent: sales
+      telephony: telnyx
+      voice: { primary: elevenlabs-agents, fallbacks: [openai-live], voice: "<11labs voice id>" }
+```
+
+Keys, with the gateway only: `TELNYX_API_KEY`, `TELNYX_PUBLIC_KEY` (the account's base64
+Ed25519 key, from Mission Control) and `ELEVENLABS_API_KEY`. Point the Call Control app's
+webhook at `https://<public_url>/calls/telnyx/events`.
+
+### Telnyx (Call Control v2)
+
+Telnyx works by command, not by answer document. Every event goes to one webhook,
+`/calls/telnyx/events`. The adapter says what each event is, and the gateway's existing
+handlers take it from there. For a carrier like this, an answer plan is **carried out**
+(`TelephonyProvider.follows_commands`, through `redirect`):
+
+| Plan | Telnyx |
+|---|---|
+| dial | `POST /v2/calls`. `command_id` is our call id, so a retried dial is one call. Machine detection is on, and our call id rides in `client_state` |
+| answered | acted on when machine detection ends (`human`, or `not_sure`, treated as a person as Twilio's `unknown` is). A machine is hung up on in silence |
+| disclosure | `speak`. The next step waits in `client_state` and runs only on `call.speak.ended`, so the disclosure is always heard in full |
+| SIP engine (GPT-Live) | `transfer`, with `X-Call-Id` / `X-Call-Token` as custom SIP headers |
+| stream engine | `streaming_start`, bidirectional RTP in PCMU (the same 8 kHz mu-law), with call id and token as stream parameters |
+| end | `hangup` (an already-ended call is not an error) |
+| status | `call.initiated` / `call.hangup`. Hangup causes map to busy, no answer, invalid number or rejected, and duration comes from the hangup |
+
+- **Signatures** are Ed25519 over `<timestamp>|<raw body>`, with a five-minute window. The
+  events route verifies *before* dispatching, so a forged `call.speak.ended` can never run a
+  step.
+- **Ed25519 needs `cryptography`.** The runtime already pins it, and the platform layer
+  borrows it lazily through one module (`ed25519.py`), like `websockets`. Without it, every
+  Telnyx webhook is refused and `nova calls check` names the package.
+- **Engine failover works on Telnyx too**, by command.
+- **Not yet:** recording through Telnyx (the bundle refuses a recording profile on it), the
+  carrier's billed price (Telnyx reports it through a separate reporting API), and spoken
+  consent. Consent is asked by key press only, and a spoken "yes" counts as no answer,
+  which records nothing.
+
+### ElevenLabs Agents
+
+The carrier streams the call to the media bridge, and the engine relays it to the tenant's
+agent over the Agents WebSocket. Audio passes through untouched (mu-law 8 kHz both ways).
+
+- **Configure the agent**:
+  - input and output audio `ulaw_8000`. A call refuses to start otherwise, and fails over;
+  - allow **prompt and voice overrides** in its security settings;
+  - define one **client tool**, `lookup_knowledge(question: string)`.
+- **What stays NOVA's on every call:**
+  - The purpose's instructions are the prompt override, the profile's voice is the TTS
+    override, and the call id is a dynamic variable.
+  - `lookup_knowledge` is answered by the gateway's read-only, audited knowledge lookup.
+    Any other client tool is refused.
+- **The API key never travels on the socket.** Each conversation opens through a one-time
+  signed URL.
+- **Barge-in** (`interruption`) clears the carrier's playback. **Pings** are answered.
+- **Spoken opt-outs** are caught in the caller's transcript as it arrives. The contact is
+  suppressed at once, the agent is told to say goodbye, and the call ends within 8 seconds.
+- **Transcripts** of both sides feed the redacting transcriber and the payment guard.
+  ElevenLabs reports finished utterances, not partials, so the guard acts at the end of a
+  sentence. Prefer GPT-Live or the cascaded engine for calls that are recorded and may hear
+  card details.
+
 ## Not built yet, in the order it lands
 
 1. **Next:** a first live call on a test number, and a first live email.
 2. **Legal sign-off of the consent rule per launch market**, then switching recording on
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
-3. **Phase 5, part 2:** more engines and carriers.
-   - A Telnyx carrier. Its webhooks are Ed25519-signed, so verifying them needs a crypto
-     library: a dependency decision.
-   - ElevenLabs Agents, if the benchmark justifies it.
-   - Amazon Nova Sonic. Bedrock's bidirectional stream needs an HTTP/2 event-stream client
-     that boto3 does not provide: another dependency decision.
+3. **Amazon Nova Sonic.** Bedrock's bidirectional stream needs an HTTP/2 event-stream
+   client that boto3 does not provide, which is a dependency decision. Also recording
+   through Telnyx, and a live benchmark of engine latency.
 4. **Later:** agent-drafted email, inbound replies, meeting booking, ringless voicemail
    (with its own legal review), and a weekly insights digest.
 

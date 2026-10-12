@@ -5,8 +5,9 @@ must stay private; this one is reached by vendors over the internet and authenti
 every request by its signature instead. Putting both behind one listener would put the
 operator surface on the internet.
 
-Seven routes, POST, bodies capped at 64 KiB:
+Eight routes, POST, bodies capped at 64 KiB:
 
+    /calls/<carrier>/events        every event, for a carrier that sends all to one webhook
     /calls/<carrier>/answer        the carrier asks what to do with an answered call
     /calls/<carrier>/consent       the person's answer to "may we record?"
     /calls/<carrier>/recording     a recording started, finished, or captured nothing
@@ -28,6 +29,7 @@ from __future__ import annotations
 import http.server
 import threading
 
+from nova.audit import new_correlation_id
 from nova.communications.gateway import CallGateway
 
 MAX_BODY_BYTES = 64 * 1024
@@ -63,6 +65,35 @@ def _voice(gateway, name, headers, body, url):
     return _plain(gateway.voice_event(name, headers=headers, body=body))
 
 
+def _carrier_events(gateway, name, headers, body, url):
+    """One webhook for every event of a call (Telnyx). Verified here first — a ``continue``
+    runs the carrier's own next step, so nothing unsigned may reach it — then handed to the
+    handler for what the carrier says the event is."""
+    carrier = gateway.carriers.get(name)
+    if carrier is None:
+        return 404, "text/plain", b"no such carrier"
+    if not carrier.verify(headers, body, url):
+        return _plain(gateway.ingest(name, headers=headers, body=body, url=url))  # audited 403
+    try:
+        kind = carrier.event_kind(headers, body)
+    except ValueError:
+        return 400, "text/plain", b"rejected"
+    if kind == "continue":
+        from nova.communications.contracts import ProviderError
+
+        try:
+            carrier.continue_plan(headers, body)
+        except ProviderError as exc:
+            gateway.audit.record("communications.call.command_failed",
+                                 correlation_id=new_correlation_id(), subject=name,
+                                 detail={"carrier": name}, error=str(exc))
+        return 200, "text/plain", b"ok"
+    handler = _EVENT_HANDLERS.get(kind)
+    if handler is None:
+        return 200, "text/plain", b"ignored"
+    return handler(gateway, name, headers, body, url)
+
+
 def _email_events(gateway, name, headers, body, url):
     from nova.communications.followup_email import ingest
 
@@ -81,7 +112,15 @@ def _unsubscribe(method: str):
 
 #: ``/<area>/<provider>/<what>`` -> handler. Every route is enumerated here; nothing is
 #: matched by prefix.
+_EVENT_HANDLERS = {
+    "answer": _answer,
+    "consent": _consent,
+    "recording": _recording,
+    "status": _status,
+}
+
 ROUTES = {
+    ("calls", "events"): _carrier_events,
     ("calls", "answer"): _answer,
     ("calls", "consent"): _consent,
     ("calls", "recording"): _recording,
