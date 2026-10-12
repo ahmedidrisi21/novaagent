@@ -772,7 +772,7 @@ class AgentRuntime(ABC):
     def health(self) -> RuntimeHealth:
         """Whether the runtime is present and readable."""
 
-    def list_automations(self, *, agent_id: str = "") -> list["AutomationView"]:
+    def list_automations(self, *, agent_id: str = "") -> list[AutomationView]:
         """Recurring and scheduled work the runtime holds, per agent.
 
         Empty by default: a runtime with no scheduler reports none rather than obliging
@@ -781,7 +781,7 @@ class AgentRuntime(ABC):
         """
         return []
 
-    def scheduler_health(self, agent_id: str) -> "SchedulerHealth":
+    def scheduler_health(self, agent_id: str) -> SchedulerHealth:
         """Whether this agent's schedules will actually fire.
 
         A schedule the runtime holds and a schedule something is running are different
@@ -799,9 +799,9 @@ class AgentRuntime(ABC):
         Supplied to the automation compiler, which must not name a runtime itself. A
         runtime with no scheduler accepts anything here and refuses at create time.
         """
-        return None
+        return
 
-    def create_automation(self, agent_id: str, compiled) -> Optional["AutomationView"]:
+    def create_automation(self, agent_id: str, compiled) -> Optional[AutomationView]:
         """Create a runtime job from a **compiled** automation; None when unsupported.
 
         Deliberately takes a compiled object rather than a prompt and a schedule. A
@@ -817,7 +817,7 @@ class AgentRuntime(ABC):
 
     def update_automation(
         self, agent_id: str, automation_id: str, updates: dict
-    ) -> Optional["AutomationView"]:
+    ) -> Optional[AutomationView]:
         """Change an existing automation's name or schedule; None when unsupported.
 
         Deliberately narrow. The objective is not settable here — it went through the
@@ -866,7 +866,7 @@ class AgentRuntime(ABC):
 
     def set_automation_enabled(
         self, agent_id: str, automation_id: str, *, enabled: bool, reason: str = "",
-    ) -> Optional["AutomationView"]:
+    ) -> Optional[AutomationView]:
         """Pause or resume one automation; None when it is not this agent's.
 
         Only the enabled transition, and only through the runtime's own API — the

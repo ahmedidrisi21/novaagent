@@ -166,7 +166,7 @@ class ProviderSpec:
             names.extend(env_references(value, required_only=True))
         return tuple(dict.fromkeys(names))
 
-    def merged_with(self, override: "ProviderSpec") -> "ProviderSpec":
+    def merged_with(self, override: ProviderSpec) -> ProviderSpec:
         """``override`` wins field by field. Absent means "inherit", not "clear".
 
         Field-wise rather than wholesale: an agent that names only a different model must
@@ -186,7 +186,7 @@ class ProviderSpec:
         )
 
     @classmethod
-    def parse(cls, doc: Optional[Doc], *, prefix: str = "") -> "ProviderSpec":
+    def parse(cls, doc: Optional[Doc], *, prefix: str = "") -> ProviderSpec:
         if doc is None:
             return cls()
         source = doc.source
@@ -255,7 +255,7 @@ class DeploymentSpec:
         *,
         source: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "DeploymentSpec":
+    ) -> DeploymentSpec:
         doc = Doc(data or {}, source=source, env=env)
         provider = ProviderSpec.parse(doc.child("provider"), prefix="provider.")
         runtime_config = _parse_runtime_config(doc, source=source)

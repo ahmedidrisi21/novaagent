@@ -27,8 +27,8 @@ from nova.deploy.aws import (
 )
 
 __all__ = [
-    "IntegrationSpec",
     "InfrastructureSpec",
+    "IntegrationSpec",
     "Statement",
     "render_tfvars",
     "write_tfvars",

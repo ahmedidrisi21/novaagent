@@ -99,7 +99,7 @@ class Provenance:
     tenant_id: str = ""
 
     @classmethod
-    def read(cls, path: Path) -> Optional["Provenance"]:
+    def read(cls, path: Path) -> Optional[Provenance]:
         if not path.is_file():
             return None
         try:

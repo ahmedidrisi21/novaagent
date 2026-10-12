@@ -92,7 +92,7 @@ def _local_minutes(now: datetime, zone: str) -> Optional[int]:
 def decide_call(spec: CommunicationsSpec, facts: CallFacts) -> CallDecision:
     try:
         return _decide(spec, facts)
-    except Exception as exc:  # noqa: BLE001 — a gate that raises must still say no
+    except Exception as exc:
         return _deny("error", f"the call gate failed and refused by default: {exc}")
 
 

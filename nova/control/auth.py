@@ -286,7 +286,7 @@ class PrincipalStore:
         return found
 
     @classmethod
-    def load(cls, path: Path) -> "PrincipalStore":
+    def load(cls, path: Path) -> PrincipalStore:
         """Read a principals file. An absent file is an empty store, not an error."""
         import yaml
 

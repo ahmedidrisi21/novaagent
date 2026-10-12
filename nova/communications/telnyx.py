@@ -101,8 +101,8 @@ def _call_id_of(plan: AnswerPlan) -> str:
 
 def _seconds_between(start: str, end: str) -> int:
     try:
-        return max(0, int((datetime.fromisoformat(end.replace("Z", "+00:00")) -
-                           datetime.fromisoformat(start.replace("Z", "+00:00"))).total_seconds()))
+        return max(0, int((datetime.fromisoformat(end) -
+                           datetime.fromisoformat(start)).total_seconds()))
     except ValueError:
         return 0
 
@@ -131,7 +131,7 @@ class TelnyxTelephony(TelephonyProvider):
 
     @classmethod
     def from_env(cls, env: Mapping[str, str], *, connection_id: str, webhook_url: str,
-                 **options) -> "TelnyxTelephony":
+                 **options) -> TelnyxTelephony:
         return cls(api_key=env.get("TELNYX_API_KEY", ""),
                    public_key=env.get("TELNYX_PUBLIC_KEY", ""), connection_id=connection_id,
                    webhook_url=webhook_url, **options)

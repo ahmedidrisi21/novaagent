@@ -34,7 +34,7 @@ class ThemeSpec:
     on_accent: str = ""
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "ThemeSpec":
+    def parse(cls, doc: Optional[Doc]) -> ThemeSpec:
         if doc is None:
             return cls()
         spec = cls(
@@ -65,7 +65,7 @@ class SupportSpec:
     url: str = ""
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "SupportSpec":
+    def parse(cls, doc: Optional[Doc]) -> SupportSpec:
         if doc is None:
             return cls()
         spec = cls(email=doc.str_("email"), url=doc.str_("url"))
@@ -100,7 +100,7 @@ class IdentitySpec:
         *,
         source: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "IdentitySpec":
+    ) -> IdentitySpec:
         doc = Doc(data, source=source, env=env)
         agents_doc = doc.child("agents")
         display: dict[str, str] = {}

@@ -15,7 +15,7 @@ the gate once spend plus commitments reach the limit; calls in progress are neve
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any, Optional
 
 from nova.audit import new_correlation_id
@@ -27,11 +27,11 @@ BILLING_AFTER = timedelta(minutes=10)
 
 
 def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def month_start(now: datetime) -> datetime:
-    return now.astimezone(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return now.astimezone(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
 def _minutes(seconds: int) -> int:

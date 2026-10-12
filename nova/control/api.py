@@ -1049,7 +1049,7 @@ class ControlAPI:
                     row.automation_id,
                     tenant_id=self.bundle.tenant_id,
                 )
-            except Exception:  # noqa: BLE001 — provenance is a nicety, not the listing
+            except Exception:
                 entry = None
             if entry is not None:
                 found[row.automation_id] = entry
@@ -1066,7 +1066,7 @@ class ControlAPI:
 
         try:
             registry.forget(self.runtime.state_location, job_id)
-        except Exception:  # noqa: BLE001 — provenance is a record, not the act
+        except Exception:
             pass
 
     # -- agents ---------------------------------------------------------------
@@ -1148,7 +1148,7 @@ class ControlAPI:
             )
             # 400: the edit was refused by validation, which names the field.
             return _error(400, str(exc))
-        except Exception as exc:  # noqa: BLE001 — an intent must always reach a terminal phase
+        except Exception as exc:
             audit.record(
                 kind=kind, phase="failed", subject=subject,
                 correlation_id=correlation_id, detail={"error": repr(exc)},
@@ -1257,7 +1257,7 @@ class ControlAPI:
             )
         except NovaError as exc:
             return {"ok": False, "error": str(exc)}
-        except Exception as exc:  # noqa: BLE001 — an index failure must not lose the upload
+        except Exception as exc:
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
         for source_report in getattr(report, "sources", ()) or ():
@@ -1608,7 +1608,7 @@ class ControlAPI:
                 error=str(exc),
             )
             return _error(400, str(exc))
-        except Exception as exc:  # noqa: BLE001 — an intent always reaches a terminal phase
+        except Exception as exc:
             audit.record(
                 kind="agent.credentials_changed", phase="failed", subject=agent_id,
                 correlation_id=correlation_id, detail={"set": setting, "cleared": clearing},
@@ -1776,7 +1776,7 @@ class ControlAPI:
         )
         try:
             created = self.runtime.create_automation(compiled.agent_id, compiled)
-        except Exception as exc:  # noqa: BLE001 — an intent must always reach a terminal phase
+        except Exception as exc:
             # Without this, a runtime that raises leaves an ``intent`` row with no
             # ``committed`` and no ``failed`` beside it, and the log reads as though the
             # act might have happened. The write-ahead invariant is only worth anything
@@ -1827,7 +1827,7 @@ class ControlAPI:
                 correlation_id=correlation_id,
                 created_at=created.created_at or "",
             )
-        except Exception:  # noqa: BLE001 — provenance is a record, not the act
+        except Exception:
             pass
 
         audit.record(
@@ -1930,7 +1930,7 @@ class ControlAPI:
                     error=str(exc),
                 )
                 return _error(400, str(exc))
-            except Exception as exc:  # noqa: BLE001 — close the intent, always
+            except Exception as exc:
                 audit.record(
                     kind="automation.decision", phase="failed", subject=owner,
                     correlation_id=correlation_id,
@@ -1961,7 +1961,7 @@ class ControlAPI:
         if action == "delete":
             try:
                 removed = self.runtime.delete_automation(owner, automation_id)
-            except Exception as exc:  # noqa: BLE001 — close the intent, always
+            except Exception as exc:
                 audit.record(
                     kind="automation.decision", phase="failed", subject=owner,
                     correlation_id=correlation_id,
@@ -2002,7 +2002,7 @@ class ControlAPI:
             updated = self.runtime.set_automation_enabled(
                 owner, automation_id, enabled=action == "resume", reason=reason,
             )
-        except Exception as exc:  # noqa: BLE001 — close the intent, always
+        except Exception as exc:
             audit.record(
                 kind="automation.decision", phase="failed", subject=owner,
                 correlation_id=correlation_id,

@@ -23,10 +23,10 @@ __all__ = [
     "REQUIRE_APPROVAL",
     "ActionSpec",
     "CompiledPolicy",
-    "agent_digest",
     "Decision",
     "PermissionSpec",
     "PolicySpec",
+    "agent_digest",
     "compile_policy",
     "decide",
 ]

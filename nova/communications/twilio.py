@@ -131,7 +131,7 @@ class TwilioTelephony(TelephonyProvider):
         self._recording_url = recording_url or f"{base}/recording"
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str], *, answer_url: str, status_url: str) -> "TwilioTelephony":
+    def from_env(cls, env: Mapping[str, str], *, answer_url: str, status_url: str) -> TwilioTelephony:
         return cls(
             env.get("TWILIO_ACCOUNT_SID", ""), env.get("TWILIO_AUTH_TOKEN", ""),
             answer_url=answer_url, status_url=status_url,

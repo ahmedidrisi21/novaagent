@@ -13,7 +13,7 @@ both deliveries are idempotent on the week, so a crash in between sends nothing 
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any
 
 from nova.audit import new_correlation_id
@@ -25,12 +25,12 @@ _CONNECTED = ("session_connected", "completed", "transferred")
 
 
 def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def last_week(now: datetime) -> tuple[str, str, str]:
     """``(since, until, period)`` for the last complete ISO week, Monday to Monday UTC."""
-    today = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    today = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     until = today - timedelta(days=today.weekday())
     since = until - timedelta(days=7)
     year, week, _ = since.isocalendar()
@@ -157,7 +157,7 @@ def deliver_weekly(gateway) -> str:
     """Send last week's digest if today is the day and it has not gone out. The period, or ''."""
     spec = gateway.spec.insights
     now = gateway.now()
-    if not spec.declared or WEEKDAYS[now.astimezone(timezone.utc).weekday()] != spec.weekday:
+    if not spec.declared or WEEKDAYS[now.astimezone(UTC).weekday()] != spec.weekday:
         return ""
     since, until, period = last_week(now)
     store = gateway.store

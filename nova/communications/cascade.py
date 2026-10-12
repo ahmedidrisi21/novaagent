@@ -199,7 +199,7 @@ class CascadedCall:
         self._hooks = hooks
         self._responder = responder
         self._tts_model = tts_model
-        self._utterances: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._utterances: queue.Queue[Optional[str]] = queue.Queue()
         self._history: list[dict] = []
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -223,7 +223,7 @@ class CascadedCall:
             for channel in (self._stt, self._tts):
                 try:
                     channel.close()
-                except Exception:  # noqa: BLE001 — closing a dead socket is not news
+                except Exception:
                     pass
             speaker.join(timeout=5)
             listener.join(timeout=5)
@@ -421,5 +421,5 @@ class CascadedCall:
         self._utterances.put(None)
         try:
             self._stt.send(json.dumps({"type": "CloseStream"}))
-        except Exception:  # noqa: BLE001 — the recogniser may already be gone
+        except Exception:
             pass

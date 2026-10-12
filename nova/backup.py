@@ -32,7 +32,7 @@ import json
 import os
 import tarfile
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -88,7 +88,7 @@ class BackupManifest:
         }
 
     @classmethod
-    def from_dict(cls, data: Any) -> "BackupManifest":
+    def from_dict(cls, data: Any) -> BackupManifest:
         if not isinstance(data, dict):
             raise ValueError("a backup manifest must be a JSON object")
         return cls(
@@ -151,7 +151,7 @@ def create(
     members = _members(home, include_secrets, never_archive)
     manifest = BackupManifest(
         tenant_id=tenant_id,
-        created_at=datetime.now(timezone.utc)
+        created_at=datetime.now(UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
         nova_version=__version__,
@@ -224,7 +224,6 @@ def _safe_members(archive: tarfile.TarFile, home: Path) -> list[tarfile.TarInfo]
     swapped, between backup and restore. A member named ``../../etc/cron.d/x`` is the
     oldest trick there is, and ``tarfile`` will happily follow it.
     """
-    root = (home / "home").resolve()
     safe: list[tarfile.TarInfo] = []
     for member in archive.getmembers():
         if member.name == MANIFEST_NAME:

@@ -84,7 +84,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- plumbing -------------------------------------------------------------
 
-    def log_message(self, fmt: str, *args) -> None:  # noqa: A003 — stdlib signature
+    def log_message(self, fmt: str, *args) -> None:
         logger.info("%s %s", self.address_string(), fmt % args)
 
     def _send(self, status: int, body: bytes, content_type: str) -> None:
@@ -137,10 +137,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -- methods --------------------------------------------------------------
 
-    def do_GET(self) -> None:  # noqa: N802 — stdlib signature
+    def do_GET(self) -> None:
         self._handle()
 
-    def do_HEAD(self) -> None:  # noqa: N802 — stdlib signature
+    def do_HEAD(self) -> None:
         self._handle()
 
     def _reject_method(self) -> None:
@@ -154,9 +154,9 @@ class _Handler(BaseHTTPRequestHandler):
             },
         )
 
-    do_PUT = do_PATCH = do_DELETE = _reject_method  # noqa: N815 — stdlib names
+    do_PUT = do_PATCH = do_DELETE = _reject_method
 
-    def do_OPTIONS(self) -> None:  # noqa: N802 — stdlib signature
+    def do_OPTIONS(self) -> None:
         """Deliberately unhelpful.
 
         Answering a CORS preflight is what would let a page on another origin send a real
@@ -183,7 +183,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return ""
         return f"Origin {origin!r} does not match Host {host!r}"
 
-    def do_POST(self) -> None:  # noqa: N802 — stdlib signature
+    def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
 

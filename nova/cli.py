@@ -198,7 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_verify.add_argument("seal", type=Path)
     audit_verify.add_argument("--json", action="store_true")
 
-    audit_status = audit_sub.add_parser("status", help="size, segments and retention")
+    audit_sub.add_parser("status", help="size, segments and retention")
 
     channels_cmd = sub.add_parser("channels", help="the customer's connected channels")
     channels_sub = channels_cmd.add_subparsers(dest="channels_command", required=True)

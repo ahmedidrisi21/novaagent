@@ -32,7 +32,7 @@ class OrganizationSpec:
         *,
         source: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "OrganizationSpec":
+    ) -> OrganizationSpec:
         doc = Doc(data, source=source, env=env)
         spec = cls(
             tenant_id=doc.identifier("tenant_id"),

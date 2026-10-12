@@ -43,7 +43,7 @@ def _iso(gateway, delta: timedelta = timedelta(0)) -> str:
 
 
 def unsubscribe_token(gateway, contact_id: str) -> str:
-    message = f"{gateway.store.tenant_id}:{contact_id}:{EMAIL_CHANNEL}".encode("utf-8")
+    message = f"{gateway.store.tenant_id}:{contact_id}:{EMAIL_CHANNEL}".encode()
     return hmac.new(gateway.link_secret, message, hashlib.sha256).hexdigest()[:32]
 
 
@@ -63,7 +63,7 @@ def reply_address(gateway, email_id: str) -> str:
 
 
 def _reply_signature(gateway, email_id: str) -> str:
-    message = f"{gateway.store.tenant_id}:reply:{email_id}".encode("utf-8")
+    message = f"{gateway.store.tenant_id}:reply:{email_id}".encode()
     return hmac.new(gateway.link_secret, message, hashlib.sha256).hexdigest()[:16]
 
 

@@ -27,7 +27,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Callable, Mapping, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -52,7 +52,7 @@ _PRIORITY = {"escalate": 9, "flag": 7, "task": 3}
 
 
 def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _normal(text: str) -> str:
@@ -349,7 +349,7 @@ def run_due(gateway, *, limit: int = 50) -> int:
                 "failed", error=f"no executor for {action['kind']!r}")
         except ProviderError as exc:
             outcome = Outcome("failed", error=str(exc))
-        except Exception as exc:  # noqa: BLE001 — one action's failure must not stop the rest
+        except Exception as exc:
             log.warning("post-call action %s failed: %s", action_id, exc)
             outcome = Outcome("failed", error=f"{type(exc).__name__}: {exc}")
         at = _iso(gateway.now())

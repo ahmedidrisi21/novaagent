@@ -66,7 +66,7 @@ class ResendEmail(EmailProvider):
         self._clock = clock
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str], **options) -> "ResendEmail":
+    def from_env(cls, env: Mapping[str, str], **options) -> ResendEmail:
         return cls(api_key=env.get("RESEND_API_KEY", ""),
                    webhook_secret=env.get("RESEND_WEBHOOK_SECRET", ""), **options)
 

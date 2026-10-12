@@ -86,7 +86,7 @@ class AutomationSpec:
         *,
         source: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "AutomationSpec":
+    ) -> AutomationSpec:
         doc = Doc(data, source=source, env=env)
         spec = cls(
             id=doc.identifier("id"),

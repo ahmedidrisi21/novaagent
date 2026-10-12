@@ -370,7 +370,7 @@ def parse_infrastructure(
     ):
         if "*" in value:
             raise SpecError(
-                f"must be literal, not a wildcard pattern",
+                "must be literal, not a wildcard pattern",
                 field=f"infrastructure.{name}",
                 source=doc.source,
             )

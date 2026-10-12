@@ -15,6 +15,7 @@ dependency surface of this layer is the standard library.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 from dataclasses import dataclass
 from typing import Any, Iterator, Optional
@@ -251,7 +252,7 @@ def _with_overlap(
     if overlap_chars <= 0 or len(chunks) < 2:
         return chunks
     out = [chunks[0]]
-    for previous, current in zip(chunks, chunks[1:]):
+    for previous, current in itertools.pairwise(chunks):
         tail = previous.text[-overlap_chars:].lstrip()
         out.append(
             _make_chunk(
@@ -300,7 +301,7 @@ def chunk_id(source_id: str, doc_path: str, ordinal: int, text: str) -> str:
     position is included because the same paragraph appearing twice in one document is two
     chunks, not one.
     """
-    material = f"{source_id}\0{doc_path}\0{ordinal}\0{text}".encode("utf-8")
+    material = f"{source_id}\0{doc_path}\0{ordinal}\0{text}".encode()
     return hashlib.sha256(material).hexdigest()[:32]
 
 

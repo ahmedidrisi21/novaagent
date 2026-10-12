@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -33,7 +33,7 @@ except ImportError:  # in-tree layout, for tests that import this module directl
 #: Written beside the profile's configuration by the runtime adapter.
 POLICY_FILENAME = "nova-policy.json"
 
-_CACHE: Dict[str, Any] = {}
+_CACHE: dict[str, Any] = {}
 
 #: Budget-consuming tool calls made by this process. A worker handles one task per
 #: process, so this is a per-run counter; in a long-lived interactive session it is
@@ -52,7 +52,7 @@ def _policy_path() -> Path:
     return Path(__file__).resolve().parents[2] / POLICY_FILENAME
 
 
-def _load_policy() -> Optional[Dict[str, Any]]:
+def _load_policy() -> Optional[dict[str, Any]]:
     """Read and cache the compiled policy. None when it is absent or unreadable.
 
     Cached per process: a worker handles one task and the policy cannot change underneath
@@ -60,7 +60,7 @@ def _load_policy() -> Optional[Dict[str, Any]]:
     """
     if "policy" in _CACHE:
         return _CACHE["policy"]
-    policy: Optional[Dict[str, Any]] = None
+    policy: Optional[dict[str, Any]] = None
     try:
         path = _policy_path()
         if path.is_file():
@@ -73,7 +73,7 @@ def _load_policy() -> Optional[Dict[str, Any]]:
     return policy
 
 
-def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
+def _record(policy: dict[str, Any], decision, tool_name: str) -> None:
     """Append a governance record for a refusal or an escalation.
 
     Permitted calls are not recorded: they are the overwhelming majority and recording
@@ -86,7 +86,7 @@ def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
     event = {
         "event_id": uuid.uuid4().hex,
         "correlation_id": os.environ.get("HERMES_KANBAN_TASK", "") or "runtime",
-        "ts": datetime.now(timezone.utc)
+        "ts": datetime.now(UTC)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z"),
         "kind": "policy.decision",
@@ -118,7 +118,7 @@ def _record(policy: Dict[str, Any], decision, tool_name: str) -> None:
         pass
 
 
-def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, **_: Any):
+def pre_tool_call(tool_name: str = "", args: Optional[dict[str, Any]] = None, **_: Any):
     """The runtime's policy hook. Returns a directive, or None to proceed.
 
     Unrecognised returns are ignored by the runtime, so returning ``None`` for a permitted
@@ -128,7 +128,7 @@ def pre_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = None, **
     try:
         policy = _load_policy()
         decision = decide(policy, tool_name, calls_used=_CALLS_USED)
-    except Exception as exc:  # noqa: BLE001 — a policy bug must never permit a call
+    except Exception as exc:
         return {
             "action": "block",
             "message": (

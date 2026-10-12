@@ -187,7 +187,7 @@ def catalogue(*, refresh: bool = False) -> ExtensionCatalogue:
         return _cache
     try:
         raw = _discovery()
-    except Exception as exc:  # noqa: BLE001 — a broken runtime is a report, not a crash
+    except Exception as exc:
         _cache = ExtensionCatalogue(detail=f"the runtime could not be read: {exc}")
         return _cache
     _cache = ExtensionCatalogue(

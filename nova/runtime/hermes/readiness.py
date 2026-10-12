@@ -29,7 +29,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 # The parser lives in the platform layer: a dotenv file is a format, not a runtime
 # concept, and backup needs it too. Re-exported so this module's callers are unaffected.
-from nova._env import ENV_FILENAME, read_env_file  # noqa: E402,F401
+from nova._env import ENV_FILENAME, read_env_file
 
 
 @dataclass(frozen=True)

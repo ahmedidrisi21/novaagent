@@ -119,7 +119,7 @@ def reconcile(
     if runtime is not None:
         try:
             applied = {agent.agent_id: agent for agent in runtime.list_agents()}
-        except Exception as exc:  # noqa: BLE001 — diagnosis must not fail on a bad runtime
+        except Exception as exc:
             return Reconciliation(
                 findings=tuple(_undiagnosed(event) for event in intents),
                 warnings=(f"could not read the runtime to diagnose these: {exc}",),
@@ -187,7 +187,7 @@ def _diagnose_agent(
 
     try:
         spec = bundle.agent(event.subject)
-    except Exception:  # noqa: BLE001 — an agent dropped from the bundle since the crash
+    except Exception:
         return Finding(
             kind=event.kind, subject=event.subject, correlation_id=event.correlation_id,
             started_at=event.ts, state=UNKNOWN,

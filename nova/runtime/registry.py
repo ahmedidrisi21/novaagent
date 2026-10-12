@@ -15,7 +15,7 @@ from nova.runtime.base import AgentRuntime
 
 #: name -> zero-argument factory. Factories are lazy so importing ``nova.runtime`` does
 #: not import every adapter's dependencies.
-_FACTORIES: Dict[str, Callable[..., AgentRuntime]] = {}
+_FACTORIES: dict[str, Callable[..., AgentRuntime]] = {}
 
 
 def register_runtime(name: str, factory: Callable[..., AgentRuntime]) -> None:

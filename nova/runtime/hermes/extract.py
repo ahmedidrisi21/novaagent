@@ -56,7 +56,7 @@ def extract(path: Path) -> ExtractedDocument:
             path=str(path), text="", extracted=False, method="runtime",
             detail=f"document could not be extracted: {exc}",
         )
-    except Exception as exc:  # noqa: BLE001 — one bad file must not stop an ingest
+    except Exception as exc:
         return ExtractedDocument(
             path=str(path), text="", extracted=False, method="runtime",
             detail=f"extractor failed: {type(exc).__name__}: {exc}",

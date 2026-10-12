@@ -45,7 +45,7 @@ def _mcp_rows() -> tuple[list[dict], str]:
 
     try:
         entries = list_catalog()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return [], f"the MCP catalogue could not be read: {exc}"
 
     rows = []
@@ -83,7 +83,7 @@ def _mcp_rows() -> tuple[list[dict], str]:
                 f"{len(stale)} MCP manifest(s) are newer than this runtime and were skipped: "
                 f"{', '.join(sorted(stale))}"
             )
-    except Exception:  # noqa: BLE001 — diagnostics are a nicety, never a failure
+    except Exception:
         pass
     return rows, detail
 
@@ -125,7 +125,7 @@ def _plugin_rows() -> tuple[list[dict], str]:
 
     try:
         manifests = collect_directory_manifests()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return [], f"the plugin registry could not be read: {exc}"
 
     rows = []
@@ -174,7 +174,7 @@ def server_config(server_id: str) -> tuple[dict[str, Any], str]:
 
     try:
         entry = get_entry(server_id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {}, f"the MCP catalogue could not be read: {exc}"
     if entry is None:
         return {}, f"{server_id!r} is not in this runtime's MCP catalogue"
@@ -185,7 +185,7 @@ def server_config(server_id: str) -> tuple[dict[str, Any], str]:
         )
     try:
         config = _build_server_config(entry, None)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return {}, f"{server_id!r} could not be compiled: {exc}"
     if not config:
         return {}, f"{server_id!r} produced no usable configuration"

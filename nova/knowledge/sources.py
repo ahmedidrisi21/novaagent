@@ -66,7 +66,7 @@ class KnowledgeSource:
     #: Where the documents come from, when they are mirrored rather than local. A corpus
     #: with an origin is a mirror: NOVA syncs into ``root`` and the ingest runs over the
     #: result, so nothing downstream knows the difference.
-    origin: Optional["Origin"] = None
+    origin: Optional[Origin] = None
     source: Optional[Path] = None
 
     @property
@@ -82,7 +82,7 @@ class KnowledgeSource:
         base_dir: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
         prefix: str = "",
-    ) -> "KnowledgeSource":
+    ) -> KnowledgeSource:
         doc = Doc(data, source=source, prefix=prefix, env=env)
         identifier = doc.identifier("id")
         raw_root = doc.str_("root", required=True)
@@ -167,7 +167,7 @@ class KnowledgeCatalog:
         source: Optional[Path] = None,
         base_dir: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "KnowledgeCatalog":
+    ) -> KnowledgeCatalog:
         doc = Doc(data or {}, source=source, env=env)
         raw = doc._raw("sources", []) or []
         if not isinstance(raw, list):

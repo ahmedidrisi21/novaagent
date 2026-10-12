@@ -19,7 +19,7 @@ INSTALL_HINT = "install the runtime's 'cryptography' package (pip install 'crypt
 def available() -> str:
     """'' when signatures can be checked here; otherwise what to install."""
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey  # noqa: F401
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     except ImportError:
         return f"Ed25519 webhook signatures need cryptography: {INSTALL_HINT}"
     return ""

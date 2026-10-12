@@ -115,7 +115,7 @@ class ElevenLabsVoice(StreamVoiceEngine):
         finally:
             try:
                 agent.close()
-            except Exception:  # noqa: BLE001 — already closed by the other side
+            except Exception:
                 pass
 
 
@@ -158,7 +158,7 @@ class AgentCall:
             self._done.set()
             try:
                 self._agent.close()  # wakes the reader
-            except Exception:  # noqa: BLE001 — already closed
+            except Exception:
                 pass
             reader.join(timeout=5)
 
@@ -289,7 +289,7 @@ class AgentCall:
         question = str((call.get("parameters") or {}).get("question") or "")
         try:
             answer = self._hooks.answer(question) if question else ""
-        except Exception as exc:  # noqa: BLE001 — a failed lookup must not drop the call
+        except Exception as exc:
             log.warning("knowledge lookup failed on an ElevenLabs call: %s", exc)
             answer = ""
         self._to_agent({"type": "client_tool_result", "tool_call_id": tool_call_id,

@@ -63,7 +63,7 @@ class HermesPaths:
     home: Path
 
     @classmethod
-    def resolve(cls, env: Optional[Mapping[str, str]] = None) -> "HermesPaths":
+    def resolve(cls, env: Optional[Mapping[str, str]] = None) -> HermesPaths:
         return cls(home=resolve_home(env))
 
     @property

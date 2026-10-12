@@ -121,9 +121,9 @@ class EmailSpec:
     #: reply address is ``reply+<signed id>@<domain>`` and replies reach the agent.
     reply_domain: str = ""
     #: Agents that may write their own emails to contacts, and on what terms.
-    agents: tuple["EmailGrant", ...] = ()
+    agents: tuple[EmailGrant, ...] = ()
 
-    def grant(self, agent: str) -> Optional["EmailGrant"]:
+    def grant(self, agent: str) -> Optional[EmailGrant]:
         return next((g for g in self.agents if g.agent == agent), None)
 
     def to_dict(self) -> dict[str, Any]:
