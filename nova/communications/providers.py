@@ -229,7 +229,7 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "inbound": _vendor(True, "vendor supports it; this adapter does not yet"),
             "transfer": _tested(True),
             "answering_machine_detection": _tested(True),
-            "recording": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "recording": _tested(True),
             "signed_webhooks": _tested(True),
         },
         verification=Verification.LOCAL_VALIDATED,
@@ -237,8 +237,9 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         caveat=(
             "Exercised against a scripted stand-in only; no live call has been placed. "
             "Webhooks are Ed25519-signed, so the gateway needs the runtime's cryptography "
-            "package. Consent is asked by key press only, and calls cannot be recorded "
-            "through this carrier yet. Moving a live call between engines works."
+            "package. Consent is asked by key press only, so word the consent prompt as a "
+            "key-press question. Recording, pausing and deleting work; the billed price is "
+            "not read back yet."
         ),
     ),
     # -- email -----------------------------------------------------------------------------

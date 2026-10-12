@@ -32,6 +32,7 @@ from nova.communications.contracts import (
 from nova.communications.gate import Contact
 from nova.communications.store_actions import ACTIONS_SCHEMA, ActionsStoreMixin
 from nova.communications.store_delegations import DELEGATIONS_SCHEMA, DelegationsStoreMixin
+from nova.communications.store_insights import INSIGHTS_SCHEMA, InsightsStoreMixin
 from nova.communications.store_usage import UsageStoreMixin
 
 _SCHEMA = """
@@ -224,7 +225,7 @@ def _call(row: Optional[tuple]) -> Optional[CallRecord]:
     return CallRecord(*values)
 
 
-class CommsStore(ActionsStoreMixin, DelegationsStoreMixin, UsageStoreMixin):
+class CommsStore(ActionsStoreMixin, DelegationsStoreMixin, UsageStoreMixin, InsightsStoreMixin):
     def __init__(self, path: Path | str, *, tenant_id: str) -> None:
         self.path = Path(path)
         self.tenant_id = tenant_id
@@ -237,6 +238,7 @@ class CommsStore(ActionsStoreMixin, DelegationsStoreMixin, UsageStoreMixin):
         self._db.executescript(_SCHEMA)
         self._db.executescript(ACTIONS_SCHEMA)
         self._db.executescript(DELEGATIONS_SCHEMA)
+        self._db.executescript(INSIGHTS_SCHEMA)
         self._migrate()
         self._migrate_usage()
 

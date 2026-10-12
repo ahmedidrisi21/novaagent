@@ -16,7 +16,7 @@ import json
 import os
 import threading
 import time
-from datetime import timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 
 from nova.audit import AuditLog, new_correlation_id
@@ -114,6 +114,10 @@ def register(sub) -> None:
         history.add_argument(f"--{flag}", default="")
     history.add_argument("--limit", type=int, default=50)
     history.add_argument("--json", action="store_true")
+
+    insights = command("insights", "a digest of what calls achieved and cost (counts only)")
+    insights.add_argument("--days", type=int, default=7, help="the last N days (default 7)")
+    insights.add_argument("--json", action="store_true")
 
     usage = command("usage", "this month's minutes, emails and cost, against the budget")
     usage.add_argument("--json", action="store_true")
@@ -391,6 +395,20 @@ def _history(args, bundle, gateway, public_url) -> int:
     return 0
 
 
+def _insights(args, bundle, gateway, public_url) -> int:
+    from nova.communications.insights import digest, render
+
+    until = gateway.now()
+    report = digest(gateway, since=_stamp_at(until - timedelta(days=max(1, args.days))),
+                    until=_stamp_at(until))
+    print(json.dumps(report, indent=2) if args.json else render(report, bundle.tenant_id))
+    return 0
+
+
+def _stamp_at(moment) -> str:
+    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def _usage(args, bundle, gateway, public_url) -> int:
     from nova.communications.usage import month_to_date
 
@@ -526,4 +544,5 @@ _COMMANDS = {
     "history": _history,
     "delegations": _delegations,
     "usage": _usage,
+    "insights": _insights,
 }

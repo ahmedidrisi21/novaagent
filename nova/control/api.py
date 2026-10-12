@@ -356,6 +356,10 @@ class ControlAPI:
             from nova.control.api_calls import history
 
             return history(self, query)
+        if tail == "/communications/insights":
+            from nova.control.api_calls import insights
+
+            return insights(self, query)
         if tail == "/communications/usage":
             from nova.control.api_calls import usage
 
