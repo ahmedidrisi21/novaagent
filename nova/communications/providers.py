@@ -143,13 +143,22 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         label="ElevenLabs Agents",
         capabilities={
             "speech_to_speech": _vendor(True, "managed pipeline"),
-            "tool_calls": _vendor(True),
-            "barge_in": _vendor(True),
-            "native_phone": _vendor(True, "vendor documents Twilio and SIP"),
+            "tool_calls": Capability(
+                supported=True, verification=Verification.LOCAL_VALIDATED,
+                note="one client tool, lookup_knowledge: read-only lookups; no actions mid-call"),
+            "barge_in": _tested(True),
+            "native_phone": _tested(False),
             "audio_stays_in_tenant_cloud": _vendor(False),
-            "text_transcript": _vendor(True),
+            "text_transcript": _tested(True),
         },
-        caveat="The hosted agent runs its own LLM; the tenant's agent is reached through tools.",
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/elevenlabs.py",
+        caveat=(
+            "Reached through the media bridge (Twilio or Telnyx streams the call). The hosted "
+            "agent runs its own model: it must be set to ulaw_8000 in and out, allow prompt "
+            "and voice overrides, and define a lookup_knowledge(question) client tool for "
+            "company facts. Exercised against a scripted agent only."
+        ),
     ),
     CommsProvider(
         id="bedrock-sonic",
@@ -199,7 +208,7 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "inbound": _vendor(True, "vendor supports it; this adapter does not yet"),
             "transfer": _vendor(True, "vendor supports it; this adapter does not yet"),
             "answering_machine_detection": _tested(True),
-            "recording": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "recording": _tested(True),
             "signed_webhooks": _tested(True),
         },
         verification=Verification.LOCAL_VALIDATED,
@@ -214,15 +223,23 @@ PROVIDERS: tuple[CommsProvider, ...] = (
     CommsProvider(
         id="telnyx",
         kind=Kind.TELEPHONY,
-        label="Telnyx Voice",
+        label="Telnyx Voice (Call Control v2)",
         capabilities={
-            "outbound": _vendor(True),
-            "inbound": _vendor(True),
-            "transfer": _vendor(True),
-            "answering_machine_detection": _vendor(True),
-            "recording": _vendor(True),
-            "signed_webhooks": _vendor(True),
+            "outbound": _tested(True),
+            "inbound": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "transfer": _tested(True),
+            "answering_machine_detection": _tested(True),
+            "recording": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "signed_webhooks": _tested(True),
         },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/telnyx.py",
+        caveat=(
+            "Exercised against a scripted stand-in only; no live call has been placed. "
+            "Webhooks are Ed25519-signed, so the gateway needs the runtime's cryptography "
+            "package. Consent is asked by key press only, and calls cannot be recorded "
+            "through this carrier yet. Moving a live call between engines works."
+        ),
     ),
     # -- email -----------------------------------------------------------------------------
     CommsProvider(
@@ -265,7 +282,7 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "inbound": _tested(False),
             "transfer": _tested(False),
             "answering_machine_detection": _tested(True),
-            "recording": _tested(False),
+            "recording": _tested(True),
             "signed_webhooks": _tested(True),
         },
         verification=Verification.LOCAL_VALIDATED,

@@ -1,7 +1,8 @@
 """The media bridge: where a carrier streams an answered call's audio for a stream engine.
 
-One WebSocket per call, at ``/media/<engine>``. The stream's ``start`` message carries the
-call id and token the answer plan put there; the gateway checks them exactly as it checks
+One WebSocket per call, at ``/media/<engine>``, from Twilio or Telnyx (both stream 8 kHz
+mu-law in near-identical messages). The stream's ``start`` message carries the call id
+and token the answer plan put there; the gateway checks them exactly as it checks
 a SIP session, and binds the stream to the call. Anything else is closed without a word.
 
 Internet-facing, like the webhook listener, and like it, never the Control API.
@@ -36,6 +37,15 @@ def _await_start(channel: MediaChannel) -> Optional[dict]:
     return None
 
 
+def _parameters(details: dict) -> dict:
+    """The call id and token the answer plan attached: Twilio sends ``customParameters``
+    as an object, Telnyx ``custom_parameters`` as a list of name/value pairs."""
+    raw = details.get("customParameters") or details.get("custom_parameters") or {}
+    if isinstance(raw, list):
+        raw = {str(item.get("name")): item.get("value") for item in raw if isinstance(item, dict)}
+    return raw if isinstance(raw, dict) else {}
+
+
 def bridge(gateway: CallGateway, channel: MediaChannel, path: str) -> None:
     """Serve one media stream. Blocks until the call's stream ends."""
     route = path.split("?", 1)[0].strip("/").split("/")
@@ -46,8 +56,9 @@ def bridge(gateway: CallGateway, channel: MediaChannel, path: str) -> None:
         if start is None:
             return
         details = start.get("start") or {}
-        parameters = details.get("customParameters") or {}
-        stream_sid = str(start.get("streamSid") or details.get("streamSid") or "")
+        parameters = _parameters(details)
+        stream_sid = str(start.get("streamSid") or details.get("streamSid") or
+                         start.get("stream_id") or "")
         granted = gateway.stream_started(
             route[1],
             call_id=str(parameters.get("call_id", "")),

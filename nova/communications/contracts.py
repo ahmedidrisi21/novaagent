@@ -223,6 +223,9 @@ class TelephonyProvider(ABC):
 
     #: Matches an id in :mod:`nova.communications.providers`.
     id: str = ""
+    #: True for a carrier driven by commands (Telnyx): the gateway carries out an answer
+    #: plan through :meth:`redirect` instead of returning :meth:`render_answer`'s document.
+    follows_commands: bool = False
 
     @abstractmethod
     def place_call(self, request: PlaceCall) -> str:
@@ -288,6 +291,15 @@ class TelephonyProvider(ABC):
         Optional: a carrier that cannot raises :class:`ProviderError`, and the gateway ends
         the call as it would without a fallback."""
         raise ProviderError(f"{self.id} cannot redirect a live call")
+
+    def event_kind(self, headers: Mapping[str, str], body: bytes) -> str:
+        """For a carrier that sends every event to one webhook: which handler a verified
+        event is for — ``answer``, ``consent``, ``recording``, ``status``, ``continue`` (a
+        step of the carrier's own the adapter runs) or ``ignore``."""
+        return "status"
+
+    def continue_plan(self, headers: Mapping[str, str], body: bytes) -> None:
+        """Run the next step of a plan the carrier was carrying out (``continue`` events)."""
 
     def fetch_billing(self, provider_call_ref: str) -> Optional["Billing"]:
         """What the carrier charged for a finished call, once it has settled. None while it

@@ -131,8 +131,11 @@ def consent_reply(gateway, carrier_id: str, *, headers, body: bytes, url: str = 
                              detail={"bytes": len(body)})
         return AnswerResponse(403, body=b"signature did not verify")
 
+    reply = None
+
     def hang_up(say: str = ""):
-        return AnswerResponse(200, *carrier.render_answer(AnswerPlan(hang_up=True, say=say)))
+        return gateway.respond(carrier, reply.provider_call_ref if reply else "",
+                               AnswerPlan(hang_up=True, say=say))
 
     try:
         reply = carrier.parse_consent(headers, body, url)
@@ -165,7 +168,7 @@ def consent_reply(gateway, carrier_id: str, *, headers, body: bytes, url: str = 
                               reason="recording consent not given; profile ends such calls")
         return hang_up("Understood. We'll be in touch another way. Goodbye.")
     plan = gateway.bridge_plan(record, profile, say="")
-    return AnswerResponse(200, *carrier.render_answer(plan)) if plan else hang_up()
+    return gateway.respond(carrier, record.provider_call_ref, plan) if plan else hang_up()
 
 
 def _start(gateway, carrier, record, profile, correlation: str) -> None:

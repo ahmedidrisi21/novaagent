@@ -92,6 +92,9 @@ OPTIONAL_CAPABILITY_IMPORTS = {
     # synthesiser, the media bridge). The runtime already pins websockets; a deployment
     # that never runs calls never reaches it, and the refusal names what to install.
     "nova/communications/ws.py": "websockets",
+    # Telnyx webhook signatures are Ed25519, which the standard library cannot check. The
+    # runtime pins cryptography; without it a Telnyx webhook is simply not accepted.
+    "nova/communications/ed25519.py": "cryptography",
 }
 
 
@@ -201,6 +204,7 @@ def test_every_optional_capability_has_a_degradation_proof():
     assert set(OPTIONAL_CAPABILITY_IMPORTS) == {
         "nova/knowledge/origin.py",
         "nova/communications/ws.py",
+        "nova/communications/ed25519.py",
     }, (
         "a new optional capability dependency was declared; add a test proving that module "
         "still loads and still answers when the dependency is absent, then list it here"
@@ -251,6 +255,29 @@ def test_live_calls_degrade_instead_of_failing_without_websockets():
         "\ntry:\n connect('wss://example.invalid', {})\n"
         "except WebSocketUnavailable as exc:\n assert 'websockets' in str(exc), exc\n"
         " print('degraded cleanly')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
+    )
+    assert result.returncode == 0, result.stderr
+    assert "degraded cleanly" in result.stdout
+
+
+def test_telnyx_webhooks_are_refused_not_crashed_without_cryptography():
+    """The obligation that pays for the cryptography exemption.
+
+    With the package masked out, the Telnyx adapter still imports, a signed webhook is
+    refused rather than raising, and the gateway's credential check names the package.
+    """
+    probe = (
+        "import sys; sys.modules['cryptography'] = None; "
+        "import importlib; "
+        "[importlib.import_module(f'nova.communications.{m}') for m in "
+        "('ed25519', 'telnyx', 'assemble', 'webhooks')]; "
+        "from nova.communications import ed25519; "
+        "assert ed25519.available() and 'cryptography' in ed25519.available(); "
+        "assert ed25519.verify('AAAA', 'AAAA', b'x') is False; "
+        "print('degraded cleanly')"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
