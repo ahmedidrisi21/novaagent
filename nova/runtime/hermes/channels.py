@@ -269,18 +269,18 @@ def apply(
 
     import yaml
 
+    from hermes_cli.config import require_readable_config_before_write
+
     path = Path(home) / "config.yaml"
-    existing: Mapping[str, Any] = {}
-    if path.is_file():
-        try:
-            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError) as exc:
-            raise RuntimeAdapterError(
-                f"{path} could not be read as YAML, so NOVA will not overwrite it: {exc}"
-            ) from exc
-        if loaded is not None and not isinstance(loaded, Mapping):
-            raise RuntimeAdapterError(f"{path} is not a YAML mapping; refusing to overwrite it")
-        existing = loaded or {}
+    try:
+        # The runtime's own reader for read-then-write callers: an unreadable file or a
+        # non-mapping root refuses the write instead of collapsing to {}.
+        existing: Mapping[str, Any] = require_readable_config_before_write(path)
+    except Exception as exc:
+        raise RuntimeAdapterError(
+            f"{path} could not be read as YAML, or is not a YAML mapping, so NOVA will not "
+            f"overwrite it: {exc}"
+        ) from exc
 
     serve_allowlist = supports_serve_allowlist()
     if plan_.served_agents and not serve_allowlist:
