@@ -24,6 +24,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from nova._fields import Doc
 from nova.communications.providers import Kind, get_provider
+from nova.communications.spec_budget import BudgetSpec, parse_budget
 from nova.communications.spec_delegation import DelegationSpec, parse_delegation
 from nova.communications.spec_actions import (
     ActionsSpec,
@@ -280,6 +281,7 @@ class CommunicationsSpec:
     actions: ActionsSpec = field(default_factory=ActionsSpec)
     email: EmailSpec = field(default_factory=EmailSpec)
     delegation: DelegationSpec = field(default_factory=DelegationSpec)
+    budget: BudgetSpec = field(default_factory=BudgetSpec)
 
     @property
     def declared(self) -> bool:
@@ -306,6 +308,7 @@ class CommunicationsSpec:
             "actions": self.actions.to_dict(),
             "email": self.email.to_dict(),
             "delegation": self.delegation.to_dict(),
+            "budget": self.budget.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -487,6 +490,8 @@ def parse_communications(
     actions = parse_actions(doc.child("actions"))
     email = parse_email(doc.child("email"), allow_test=allow_test)
     delegation = parse_delegation(doc.child("delegation"))
+    budget = parse_budget(doc.child("budget"), providers={
+        *voice, *telephony, *((email.provider,) if email.provider else ())})
     purposes: dict[str, Purpose] = {}
     raw_purposes = doc._raw("purposes") or []
     if not isinstance(raw_purposes, list):
@@ -624,6 +629,7 @@ def parse_communications(
         actions=actions,
         email=email,
         delegation=delegation,
+        budget=budget,
     )
 
 
@@ -647,6 +653,9 @@ def load_communications(
 
 def check_agents_exist(spec: CommunicationsSpec, agent_ids: Sequence[str]) -> None:
     known = set(agent_ids)
+    if spec.budget.alert_assignee and spec.budget.alert_assignee not in known:
+        raise SpecError(f"budget alerts go to {spec.budget.alert_assignee!r}, which this bundle "
+                        "does not define", field="communications.budget.alert_assignee")
     for agent in sorted(spec.delegation.participants() - known):
         raise SpecError(f"delegation route names {agent!r}, which this bundle does not define",
                         field="communications.delegation.routes")

@@ -15,6 +15,7 @@ from typing import Any, Mapping, Optional
 
 from nova.communications.contracts import (
     AnswerPlan,
+    Billing,
     CallStatus,
     ConsentReply,
     FailureReason,
@@ -61,6 +62,11 @@ class MockTelephony(TelephonyProvider):
         #: recording ref -> "recording" | "paused" | "deleted"
         self.recordings: dict[str, str] = {}
         self.fail_recording = False
+        #: (call ref, plan) for every live call moved to another engine.
+        self.redirected: list = []
+        self.fail_redirect = False
+        #: What ``fetch_billing`` reports per call reference; absent means "not settled yet".
+        self.billing: dict[str, Billing] = {}
 
     def place_call(self, request: PlaceCall) -> str:
         if self.fail_next is not None:
@@ -85,6 +91,16 @@ class MockTelephony(TelephonyProvider):
             return None
         return ProviderEvent(self.id, f"{provider_call_ref}:fetched:{status.value}",
                              provider_call_ref, status)
+
+    def redirect(self, provider_call_ref: str, plan: AnswerPlan) -> None:
+        if self.fail_redirect:
+            raise ProviderError("mock carrier could not redirect")
+        self.redirected.append((provider_call_ref, plan))
+
+    def fetch_billing(self, provider_call_ref: str) -> Optional[Billing]:
+        if self.unreachable:
+            raise ProviderError("mock carrier unreachable")
+        return self.billing.get(provider_call_ref)
 
     def parse_consent(self, headers: Mapping[str, str], body: bytes, url: str) -> ConsentReply:
         try:
@@ -138,6 +154,7 @@ class MockTelephony(TelephonyProvider):
             status=status,
             failure=FailureReason(failure) if failure else None,
             call_id_hint=str(payload.get("call_id", "")),
+            detail={"duration_seconds": int(payload["duration"])} if payload.get("duration") else {},
         )
 
     def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:
@@ -156,10 +173,12 @@ class MockTelephony(TelephonyProvider):
 
     def callback(
         self, call_ref: str, status: CallStatus, *, event_id: str,
-        failure: Optional[FailureReason] = None, call_id: str = "",
+        failure: Optional[FailureReason] = None, call_id: str = "", duration: int = 0,
     ) -> tuple[dict[str, str], bytes]:
         """A signed callback as the carrier would send it: ``(headers, body)``."""
         payload: dict[str, Any] = {"event_id": event_id, "call_ref": call_ref, "status": status.value}
+        if duration:
+            payload["duration"] = duration
         if failure is not None:
             payload["failure"] = failure.value
         if call_id:

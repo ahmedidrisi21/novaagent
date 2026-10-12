@@ -57,6 +57,8 @@ class CallFacts:
     prior_contact: bool
     #: The moment of the request, timezone-aware.
     now: datetime
+    #: Why the tenant's budget allows no new call, or '' when it does.
+    budget: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,8 @@ def _decide(spec: CommunicationsSpec, facts: CallFacts) -> CallDecision:
             f"agent has placed {facts.calls_today} of {profile.max_calls_per_day} calls "
             "allowed today (UTC)",
         )
+    if facts.budget:
+        return _deny("budget", facts.budget)
 
     if profile.approval == "always":
         return CallDecision(REQUIRE_APPROVAL, "this agent's calls need human approval", "approval")

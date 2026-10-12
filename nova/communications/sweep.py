@@ -40,6 +40,7 @@ from nova.communications.extraction import run_pending
 from nova.communications.followup_email import expire_bodies
 from nova.communications.recording import expire
 from nova.communications.store import CallRecord
+from nova.communications.usage import raise_alerts, reconcile_billing
 
 STRANDED_AFTER = timedelta(minutes=10)
 APPROVAL_TTL = timedelta(hours=24)
@@ -125,6 +126,12 @@ def sweep(gateway: CallGateway) -> list[Reconciled]:
     delegated = sweep_delegations(gateway)
     if delegated:
         out.append(Reconciled("", "", "", f"assigned or expired {delegated} delegation(s)"))
+
+    billed = reconcile_billing(gateway)
+    if billed:
+        out.append(Reconciled("", "", "", f"recorded the carrier's bill for {billed} call(s)"))
+    for percent in raise_alerts(gateway):
+        out.append(Reconciled("", "", "", f"communications budget passed {percent}%"))
 
     expired = expire(gateway)
     if expired:

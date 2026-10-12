@@ -23,7 +23,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Callable, Mapping, Optional
 
 from nova.audit import AuditLog, new_correlation_id
@@ -54,9 +54,17 @@ from nova.communications.mail import EmailProvider
 from nova.communications.recording import guard_for
 from nova.communications.spec import CommunicationsSpec
 from nova.communications.store import CallRecord, CommsStore
+from nova.communications.usage import exhausted
 
 if TYPE_CHECKING:
     from nova.runtime.base import WorkItem
+
+
+#: Said while the call moves to the next engine, so the silence has a reason.
+FAILOVER_LINE = "One moment, please."
+#: An engine that failed this often within this window is passed over for new calls.
+ENGINE_FAILURES_TO_SKIP = 3
+ENGINE_WINDOW = timedelta(minutes=10)
 
 
 def _iso(moment: datetime) -> str:
@@ -157,6 +165,7 @@ class CallGateway:
             calls_today=self.store.count_dialled_since(agent, _iso(midnight)),
             prior_contact=self.store.completed_before(agent, contact_id),
             now=now,
+            budget=exhausted(self),
         )
 
     def _action_digest(self, agent: str, contact_id: str, purpose: str) -> str:
@@ -394,6 +403,8 @@ class CallGateway:
                                   failure=event.failure):
             return IngestResult("ignored", "would not move the call forward", record.call_id)
         self.store.mark_applied(carrier.id, event.provider_event_id)
+        if event.detail.get("duration_seconds"):
+            self.store.set_duration(record.call_id, int(event.detail["duration_seconds"]))
         self.audit.record(
             "communications.call.status", correlation_id=new_correlation_id(),
             subject=record.call_id,
@@ -458,9 +469,7 @@ class CallGateway:
         """Connect an answered call to its voice engine. None (and the call failed) when no
         engine this agent may use is configured."""
         now = _iso(self._clock())
-        engine = record.voice_engine or next(
-            (e for e in profile.voice.ordered if e in self.voices), ""
-        )
+        engine = record.voice_engine or self._next_engine(profile, after=None)
         if not engine:
             reason = "no voice engine this agent may use is configured"
             self.store.advance(record.call_id, CallStatus.FAILED, at=now,
@@ -475,6 +484,57 @@ class CallGateway:
             language=profile.voice.language,
             connect=self.voices[engine].bridge_target(record.call_id, self.call_token(record.call_id)),
         )
+
+    def _healthy(self, engine: str) -> bool:
+        since = _iso(self._clock() - ENGINE_WINDOW)
+        return self.store.engine_failures_since(engine, since) < ENGINE_FAILURES_TO_SKIP
+
+    def _next_engine(self, profile, *, after: Optional[str]) -> str:
+        """The first configured engine in the agent's order, after ``after``. An engine that
+        keeps failing is passed over while another is available."""
+        order = list(profile.voice.ordered)
+        if after is None:
+            candidates = order
+        elif after in order:
+            candidates = order[order.index(after) + 1:]
+        else:
+            candidates = []
+        configured = [e for e in candidates if e in self.voices]
+        return next((e for e in configured if self._healthy(e)), configured[0] if configured else "")
+
+    def engine_failed(self, call_id: str, engine: str, reason: str) -> bool:
+        """A voice engine refused or dropped a live call. Move the call to the agent's next
+        engine through the carrier, without hanging up; True when it moved. Otherwise end the
+        phone leg, so the person is not left in silence. Each engine is tried once per call."""
+        record = self.store.call(call_id)
+        if record is None:
+            return False
+        now = _iso(self._clock())
+        self.store.record_engine_failure(engine, call_id, reason, at=now)
+        profile = self.spec.profile(record.agent)
+        carrier = self.carriers.get(record.telephony)
+        target = self._next_engine(profile, after=engine) if profile else ""
+        correlation = new_correlation_id()
+        if target and carrier is not None and record.provider_call_ref and \
+                not record.status.terminal and self.store.switch_engine(
+                    call_id, from_engine=engine, to_engine=target, at=now):
+            try:
+                carrier.redirect(record.provider_call_ref, AnswerPlan(
+                    say=FAILOVER_LINE, language=profile.voice.language,
+                    connect=self.voices[target].bridge_target(call_id, self.call_token(call_id))))
+            except ProviderError as exc:
+                reason = f"{reason}; failover to {target} failed: {exc}"
+            else:
+                self.audit.record("communications.call.failed_over", correlation_id=correlation,
+                                  subject=call_id,
+                                  detail={"from": engine, "to": target, "reason": reason[:300]})
+                return True
+        self.store.advance(call_id, CallStatus.FAILED, at=_iso(self._clock()),
+                           failure=FailureReason.PROVIDER_FAILURE, reason=reason)
+        self.audit.record("communications.call.failed", correlation_id=correlation,
+                          subject=call_id, detail={"voice_engine": engine}, error=reason)
+        self._end_quietly(record)
+        return False
 
     # -- voice sessions -----------------------------------------------------------------
 
@@ -561,12 +621,9 @@ class CallGateway:
             voice.accept(incoming.session_id,
                          self._session_request(record, delegation=answer is not None))
         except ProviderError as exc:
-            self.store.advance(call_id, CallStatus.FAILED, at=_iso(self._clock()),
-                               failure=FailureReason.PROVIDER_FAILURE, reason=str(exc))
-            self.audit.record("communications.call.failed", correlation_id=correlation,
-                              subject=call_id, error=str(exc))
-            self._end_quietly(record)
-            return IngestResult("rejected", str(exc), call_id, http_status=200)
+            moved = self.engine_failed(call_id, engine_id, str(exc))
+            return IngestResult("applied" if moved else "rejected",
+                                "failed over" if moved else str(exc), call_id, http_status=200)
 
         self.store.advance(call_id, CallStatus.SESSION_CONNECTED, at=_iso(self._clock()))
         self.store.mark_applied(engine_id, incoming.event_id)

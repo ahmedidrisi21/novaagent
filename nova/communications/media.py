@@ -61,8 +61,8 @@ def bridge(gateway: CallGateway, channel: MediaChannel, path: str) -> None:
             voice.converse(channel, stream_sid, request, hooks)
         except Exception as exc:  # noqa: BLE001 — a broken engine must still hang up
             log.warning("stream engine %s failed on call %s: %s", route[1], request.call_id, exc)
-            if hooks.end_call is not None:
-                hooks.end_call()
+            # The next engine in the agent's order takes the call, or the phone leg ends.
+            gateway.engine_failed(request.call_id, route[1], f"{type(exc).__name__}: {exc}")
     finally:
         try:
             channel.close()

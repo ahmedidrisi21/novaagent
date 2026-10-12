@@ -602,15 +602,81 @@ ended where it did.
   boundary between their profiles. An agent that can read another's profile could sign as
   it.
 
+## Phase 5, part 1: what it costs, the budget, and engine failover
+
+```yaml
+communications:
+  budget:
+    currency: USD
+    monthly_limit: 500            # hard; 0 or absent means measured, not limited
+    alert_at: [50, 80, 100]       # percent, once a month each
+    alert_assignee: operations    # optional: alerts also become work for this agent
+    rates:                        # the tenant's own contracted rates; NOVA ships none
+      twilio:      { per_minute: 0.014 }
+      openai-live: { per_minute: 0.06 }
+      resend:      { per_email: 0.0009 }
+  agents:
+    - agent: customer-support
+      voice: { primary: openai-live, fallbacks: [deepgram-cartesia], voice: "<id>" }
+```
+
+**Usage** (`nova calls usage BUNDLE`, `GET /communications/usage`, admin) shows the month
+so far:
+
+- calls, billed minutes and emails;
+- estimated cost, carrier-billed cost, and spend;
+- what calls on the line have committed;
+- the limit, what remains, and the percent used;
+- totals per agent and per provider.
+
+No contact appears in it.
+
+- **Minutes are the carrier's.** Each call's duration comes from its final callback, rounded
+  up per call as carriers bill.
+- **Estimated** cost is minutes × (carrier rate + engine rate), plus emails × email rate.
+  **Billed** cost is what the carrier reports once it settles the call. The sweep asks
+  (Twilio's Call resource `price`), and the bill replaces the carrier estimate. A gap over
+  20 % is audited as `communications.billing.mismatch`. Engine and email costs stay
+  estimates, because those vendors bill monthly.
+- **Unpriced providers are named.** A provider used this month with no rate is listed under
+  `unpriced`, not silently counted as free.
+- **The history shows each finished call's cost**, estimated and best known.
+
+**The limit is hard and counts commitments.** A call on the line has no duration yet, so
+it counts at its agent's `max_call_seconds` until it ends. That way a burst of calls
+placed together cannot overshoot the limit.
+
+- Once spend plus commitments reach the limit, the gate refuses new calls (rule `budget`).
+  Auto follow-up emails wait for a person.
+- **Calls in progress are never cut off.**
+- Each `alert_at` threshold is audited once a month (`communications.budget.alert`). If
+  `alert_assignee` is set, it also becomes work for that agent.
+
+**Engine failover.** If the voice engine refuses a session or fails mid-call (the media
+stream dies), the gateway moves the live call to the agent's next engine:
+
+- It goes through the carrier (Twilio updates the in-progress call with new TwiML).
+- The caller hears "One moment, please." while the call moves.
+- The new engine must prove the call with the same signed token.
+- **Each engine is tried once per call.** When none is left, the phone leg ends, as before.
+- **An engine that keeps failing is passed over for new calls.** After 3 failures in 10
+  minutes it is skipped while another engine is configured, and comes back once the window
+  passes.
+
 ## Not built yet, in the order it lands
 
 1. **Next:** a first live call on a test number, and a first live email.
 2. **Legal sign-off of the consent rule per launch market**, then switching recording on
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
-3. **Agent-drafted email**, inbound replies and meeting booking.
-4. **Phase 5:** Bedrock Nova Sonic, ElevenLabs Agents if the benchmark justifies it, mid-call
-   failover, cost reconciliation.
+3. **Phase 5, part 2:** more engines and carriers.
+   - A Telnyx carrier. Its webhooks are Ed25519-signed, so verifying them needs a crypto
+     library: a dependency decision.
+   - ElevenLabs Agents, if the benchmark justifies it.
+   - Amazon Nova Sonic. Bedrock's bidirectional stream needs an HTTP/2 event-stream client
+     that boto3 does not provide: another dependency decision.
+4. **Later:** agent-drafted email, inbound replies, meeting booking, ringless voicemail
+   (with its own legal review), and a weekly insights digest.
 
 A dashboard screen for the call monitor and the action plans needs the dashboard's source,
 which is not here.

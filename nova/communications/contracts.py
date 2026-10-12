@@ -131,6 +131,15 @@ class ProviderEvent:
 
 
 @dataclass(frozen=True)
+class Billing:
+    """A carrier's own account of one call: how long it was billed for, and what it cost."""
+
+    duration_seconds: int
+    price: float
+    currency: str
+
+
+@dataclass(frozen=True)
 class SipTarget:
     """Bridge the call to a voice engine's SIP address, carrying these headers."""
 
@@ -272,6 +281,18 @@ class TelephonyProvider(ABC):
         the carrier cannot be asked — which is not the same answer, and must not be
         treated as one.
         """
+
+    def redirect(self, provider_call_ref: str, plan: "AnswerPlan") -> None:
+        """Move a live call to a new plan — another voice engine — without hanging up.
+
+        Optional: a carrier that cannot raises :class:`ProviderError`, and the gateway ends
+        the call as it would without a fallback."""
+        raise ProviderError(f"{self.id} cannot redirect a live call")
+
+    def fetch_billing(self, provider_call_ref: str) -> Optional["Billing"]:
+        """What the carrier charged for a finished call, once it has settled. None while it
+        has not, or for a carrier that does not report it."""
+        return None
 
 
 @dataclass(frozen=True)
