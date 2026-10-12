@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -27,7 +27,7 @@ from nova.runtime.hermes.paths import HermesPaths
 from tests.platform.test_communications_actions import Board
 from tests.platform.test_communications_agent_tool import COMMS, bundle_with, load_tool
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 PUBLIC = "https://calls.example.test"
 DOMAIN = "replies.acme.example"
 

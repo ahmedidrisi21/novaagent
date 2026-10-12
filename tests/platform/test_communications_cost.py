@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -22,7 +22,7 @@ from nova.errors import SpecError
 
 from tests.platform.test_communications_actions import Board
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 
 SPEC = {"communications": {
     "allow_test_providers": True,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 import yaml
@@ -31,7 +31,7 @@ from tests.platform.test_communications_actions import Board
 from tests.platform.test_communications_agent_tool import load_tool
 from tests.platform.test_communications_extraction import Reader
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 
 
 def spec(routes, **limits):
@@ -108,7 +108,7 @@ def test_a_delegation_is_one_task_however_often_it_is_filed(rig):
 
 
 def test_only_the_receiver_may_report_and_a_result_must_have_what_was_asked(rig):
-    make, store, _, _ = rig
+    make, _store, _, _ = rig
     gateway = make(spec({"a": ["b"]}))
     hand(gateway, "a", "b", ident="d1", expected=["budget", "decision_maker"])
     with pytest.raises(ValueError, match="only the agent"):

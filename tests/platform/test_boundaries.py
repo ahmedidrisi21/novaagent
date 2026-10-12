@@ -151,8 +151,7 @@ def test_the_adapter_packages_still_import_without_their_runtime():
         "importlib.import_module('nova.runtime.hermes.adapter')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
-    )
+        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
     assert result.returncode == 0, result.stderr
 
 
@@ -234,8 +233,7 @@ def test_s3_mirroring_degrades_instead_of_failing_without_boto3(tmp_path):
         "print('degraded cleanly')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
-    )
+        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
     assert result.returncode == 0, result.stderr
     assert "degraded cleanly" in result.stdout
 
@@ -257,8 +255,7 @@ def test_live_calls_degrade_instead_of_failing_without_websockets():
         " print('degraded cleanly')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
-    )
+        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
     assert result.returncode == 0, result.stderr
     assert "degraded cleanly" in result.stdout
 
@@ -280,8 +277,7 @@ def test_telnyx_webhooks_are_refused_not_crashed_without_cryptography():
         "print('degraded cleanly')"
     )
     result = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT
-    )
+        [sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
     assert result.returncode == 0, result.stderr
     assert "degraded cleanly" in result.stdout
 
@@ -421,8 +417,7 @@ def test_protected_identifier_script_passes():
         [sys.executable, str(ROOT / "scripts" / "check_protected_identifiers.py")],
         capture_output=True,
         text=True,
-        cwd=ROOT,
-    )
+        cwd=ROOT, check=False)
     assert result.returncode == 0, result.stderr
 
 
@@ -436,8 +431,7 @@ def test_protected_identifier_script_catches_a_stdlib_shadow(tmp_path):
             [sys.executable, str(ROOT / "scripts" / "check_protected_identifiers.py")],
             capture_output=True,
             text=True,
-            cwd=ROOT,
-        )
+            cwd=ROOT, check=False)
         assert result.returncode == 1
         assert "shadows the stdlib" in result.stderr
     finally:

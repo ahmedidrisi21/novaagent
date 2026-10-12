@@ -200,7 +200,7 @@ def test_permitted_calls_are_not_recorded(applied, audit):
 def test_every_record_carries_a_reason(applied, audit):
     plugin = load_installed_plugin(applied, "customer-support", "nova_p10")
     plugin.pre_tool_call(tool_name="terminal", args={})
-    record = [event for event in audit.read() if event.kind == "policy.decision"][0]
+    record = next(event for event in audit.read() if event.kind == "policy.decision")
     assert record.detail["reason"]
     assert record.detail["rule"] == "explicit-deny"
 

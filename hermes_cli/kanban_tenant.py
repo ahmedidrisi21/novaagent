@@ -41,14 +41,14 @@ from typing import Any, Iterator, Optional
 
 __all__ = [
     "TenantViolation",
-    "normalize",
-    "current",
     "bind",
-    "use",
+    "current",
     "from_env",
-    "scope_clause",
+    "normalize",
     "row_tenant_matches",
+    "scope_clause",
     "strict",
+    "use",
 ]
 
 _log = logging.getLogger("hermes.kanban.tenant")

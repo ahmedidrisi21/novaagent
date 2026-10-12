@@ -76,7 +76,7 @@ class FakeS3:
 def _etag(body: bytes) -> str:
     import hashlib
 
-    return hashlib.md5(body).hexdigest()  # noqa: S324 — matching S3's ETag, not hashing a secret
+    return hashlib.md5(body).hexdigest()
 
 
 @pytest.fixture
@@ -87,7 +87,7 @@ def stub_boto3(monkeypatch):
     def install(client):
         holder["client"] = client
         module = types.ModuleType("boto3")
-        module.client = lambda service, **kwargs: (  # noqa: ARG005
+        module.client = lambda service, **kwargs: (
             holder.setdefault("kwargs", kwargs) is not None and client
         ) and client
         monkeypatch.setitem(sys.modules, "boto3", module)
@@ -440,10 +440,10 @@ class _S3Protocol(BaseHTTPRequestHandler):
 
     objects: dict[str, bytes] = {}
 
-    def log_message(self, *args):  # noqa: A003 — silence the default stderr logging
+    def log_message(self, *args):
         pass
 
-    def do_GET(self):  # noqa: N802 — BaseHTTPRequestHandler's naming
+    def do_GET(self):
         from urllib.parse import parse_qs, unquote, urlparse
         from xml.sax.saxutils import escape
 

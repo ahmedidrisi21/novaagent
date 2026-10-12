@@ -60,7 +60,7 @@ class PlanGuard(unittest.TestCase):
     def test_cli_exit_codes(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump({"resource_changes": [rc("aws_ebs_volume.s", "aws_ebs_volume", ["delete"])]}, f)
-        p = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "plan_guard.py"), f.name], capture_output=True, text=True)
+        p = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "plan_guard.py"), f.name], capture_output=True, text=True, check=False)
         self.assertEqual(p.returncode, 3); self.assertIn("VERDICT: BLOCKED", p.stdout)
 
 
@@ -102,7 +102,7 @@ class StateMachine(unittest.TestCase):
 
     def test_cli_roundtrip(self):
         d = tempfile.mkdtemp(); env = dict(os.environ, NOVA_STATE_FILE=os.path.join(d, "s.json"))
-        run = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "deploy_state.py"), *a], env=env, capture_output=True, text=True)
+        run = lambda *a: subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "deploy_state.py"), *a], env=env, capture_output=True, text=True, check=False)
         self.assertEqual(run("init", "--env", "t").returncode, 0)
         self.assertEqual(run("advance", "DISCOVER").returncode, 0)
         self.assertEqual(run("advance", "READY").returncode, 3)
@@ -156,7 +156,7 @@ class CommandGuard(unittest.TestCase):
     def test_hook_io(self):
         p = subprocess.run([sys.executable, os.path.join(ROOT, "hooks", "command_guard.py")],
                            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "terraform destroy"}}),
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, check=False)
         self.assertEqual(json.loads(p.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
 

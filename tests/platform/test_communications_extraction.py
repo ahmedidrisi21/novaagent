@@ -6,7 +6,7 @@ import copy
 import json
 import shutil
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 import yaml
@@ -28,7 +28,7 @@ from nova.spec import load_bundle
 from tests.platform.conftest import EXAMPLE_BUNDLE
 from tests.platform.test_communications_live import Scripted
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 
 SPEC = {"communications": {
     "allow_test_providers": True,
@@ -146,7 +146,7 @@ def test_a_call_never_overwrites_a_value_a_person_entered(world):
     finish(gateway, carrier, record, TURNS)
     process_call(gateway, record.call_id, gateway.extractor)
     assert store.attribute("c1", "budget")["value"] == "8000"
-    budget = [r for r in store.reviews() if r["name"] == "budget"][0]
+    budget = next(r for r in store.reviews() if r["name"] == "budget")
     assert (budget["current_value"], budget["reason"]) == ("8000", "a person entered the current value")
 
 

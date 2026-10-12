@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -36,7 +36,7 @@ from nova.communications.signing import sign
 from nova.communications.twilio import TwilioTelephony, signature
 from nova.communications.webhooks import build_server, handle
 
-NOON_UTC = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+NOON_UTC = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 PUBLIC = "https://hooks.example.test"
 TOKEN = "twilio-auth-token"
 WHSEC = "whsec_" + base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()

@@ -189,8 +189,7 @@ def test_worker_subprocess_inherits_its_boundary(board):
         "PYTHONPATH": str(REPO_ROOT),
     }
     out = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=120,
-    ).stdout
+        [sys.executable, "-c", script], capture_output=True, text=True, env=env, timeout=120, check=False).stdout
 
     assert "bound tenant-b" in out
     assert "foreign None" in out
@@ -254,7 +253,7 @@ def test_concurrent_submits_create_exactly_one_task(board):
             )
             with lock:
                 ids.append(tid)
-        except Exception as exc:  # noqa: BLE001 — the assertion reports it
+        except Exception as exc:
             with lock:
                 errors.append(f"{type(exc).__name__}: {exc}")
         finally:
@@ -716,8 +715,7 @@ def test_separate_processes_in_different_tenants_each_get_their_own_job(board):
         proc = subprocess.run(
             [sys.executable, "-c", _SUBMIT_SCRIPT, tenant, "nightly"],
             capture_output=True, text=True, timeout=180,
-            env={**os.environ, "HERMES_HOME": str(board), "PYTHONPATH": str(REPO_ROOT)},
-        )
+            env={**os.environ, "HERMES_HOME": str(board), "PYTHONPATH": str(REPO_ROOT)}, check=False)
         assert proc.returncode == 0, proc.stderr[-2000:]
         outs[tenant] = proc.stdout.strip().splitlines()[-1]
 

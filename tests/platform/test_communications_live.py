@@ -12,7 +12,7 @@ import json
 import queue
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -39,7 +39,7 @@ from nova.communications.openai_live import LiveSideband
 from nova.communications.twilio import TwilioTelephony
 from nova.knowledge import ingest, load_catalog
 
-NOON_UTC = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+NOON_UTC = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 SECRET = b"a-bridge-secret-of-enough-length"
 _EOF = object()
 
@@ -48,7 +48,7 @@ class Scripted(MediaChannel):
     """A WebSocket the test drives: ``push`` what the far side says, read ``sent``."""
 
     def __init__(self, on_send=None) -> None:
-        self.inbox: "queue.Queue" = queue.Queue()
+        self.inbox: queue.Queue = queue.Queue()
         self.sent: list = []
         self.closed = False
         self._on_send = on_send
@@ -291,7 +291,7 @@ def answered(world, agent):
 
 
 def test_a_sip_session_is_accepted_with_delegation_and_gets_its_lookup(world):
-    record, plan = answered(world, "sip-agent")
+    _record, plan = answered(world, "sip-agent")
     headers, body = world.sip.incoming(session_id="s1", event_id="e1", sip_headers=plan["headers"])
     assert world.gateway.voice_event("mock-voice", headers=headers, body=body).outcome == "applied"
     assert world.sip.accepted["s1"].delegation is True

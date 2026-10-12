@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 import yaml
@@ -24,8 +24,8 @@ from nova.errors import SpecError
 from tests.platform.conftest import EXAMPLE_BUNDLE
 from tests.platform.test_communications_actions import Board
 
-MONDAY = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)   # a Monday
-LAST_WEEK = datetime(2026, 10, 7, 15, 0, tzinfo=timezone.utc)  # the Wednesday before
+MONDAY = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)   # a Monday
+LAST_WEEK = datetime(2026, 10, 7, 15, 0, tzinfo=UTC)  # the Wednesday before
 
 SPEC = {"communications": {
     "allow_test_providers": True,
@@ -89,7 +89,7 @@ def a_week_of_calls(gateway, rig, store):
 
 
 def test_the_digest_counts_outcomes_and_names_nobody(world):
-    make, store, clock, rig = world
+    make, store, _clock, rig = world
     gateway = make()
     a_week_of_calls(gateway, rig, store)
     since, until, period = last_week(MONDAY)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -108,7 +108,7 @@ def test_declaring_calls_changes_the_bundle_digest_and_absence_does_not(tmp_path
 # -- the gate -----------------------------------------------------------------------------
 
 SPEC = parse_communications(BASE)
-NOW = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)  # 10:00 in Chicago
+NOW = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)  # 10:00 in Chicago
 CONTACT = Contact("c1", "+13125550101", "America/Chicago", ("customers",))
 
 
@@ -134,7 +134,7 @@ def facts(**changes):
         ({"purpose": "offer"}, "consent"),  # marketing needs written consent too
         ({"contact": Contact("c1", "+1312", "", ("customers",))}, "calling_hours"),
         ({"contact": Contact("c1", "+1312", "Mars/Olympus", ("customers",))}, "calling_hours"),
-        ({"now": datetime(2026, 10, 12, 3, 0, tzinfo=timezone.utc)}, "calling_hours"),
+        ({"now": datetime(2026, 10, 12, 3, 0, tzinfo=UTC)}, "calling_hours"),
         ({"active_calls": 1}, "concurrency"),
         ({"calls_today": 20}, "daily_calls"),
     ],

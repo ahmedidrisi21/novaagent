@@ -71,7 +71,7 @@ from nova.knowledge import KnowledgeIndex
 with KnowledgeIndex.open({str(HOME / 'nova-knowledge.db')!r}, create=False) as ix:
     hits = ix.search('quokka', source_ids=['company-handbook'], limit=5)
 print(len(hits))
-"""], capture_output=True, text=True)
+"""], capture_output=True, text=True, check=False)
     check("the uploaded text is searchable", probe.stdout.strip().isdigit() and int(probe.stdout.strip()) > 0,
           probe.stdout + probe.stderr[-200:])
 

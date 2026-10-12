@@ -318,7 +318,7 @@ def test_a_decision_writes_an_intent_and_a_commit(tmp_path, agent_a):
     class _Runtime:
         name = "stub"
 
-        class capabilities:  # noqa: N801 — mirrors the real attribute shape
+        class capabilities:
             scheduling = True
 
         def list_automations(self, *, agent_id: str = ""):
@@ -359,7 +359,7 @@ def test_an_unknown_action_is_refused_before_anything_is_written(tmp_path, agent
     class _Runtime:
         name = "stub"
 
-        class capabilities:  # noqa: N801
+        class capabilities:
             scheduling = True
 
         def list_automations(self, *, agent_id: str = ""):
@@ -384,7 +384,7 @@ def test_a_runtime_without_scheduling_is_told_so_rather_than_shown_a_dead_button
     class _Runtime:
         name = "stub"
 
-        class capabilities:  # noqa: N801
+        class capabilities:
             scheduling = False
 
     api = ControlAPI.__new__(ControlAPI)
@@ -414,7 +414,7 @@ def test_a_viewer_is_refused_by_the_api_not_merely_by_the_ui(tmp_path, agent_a):
     class _Runtime:
         name = "stub"
 
-        class capabilities:  # noqa: N801
+        class capabilities:
             scheduling = True
 
         def list_automations(self, *, agent_id: str = ""):
@@ -448,7 +448,7 @@ def test_an_admin_passes_the_same_gate(tmp_path, agent_a):
     class _Runtime:
         name = "stub"
 
-        class capabilities:  # noqa: N801
+        class capabilities:
             scheduling = True
 
         def list_automations(self, *, agent_id: str = ""):

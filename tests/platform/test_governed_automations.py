@@ -275,7 +275,7 @@ class _Runtime:
 
     name = "stub"
 
-    class capabilities:  # noqa: N801 — mirrors the real attribute shape
+    class capabilities:
         scheduling = True
 
     def __init__(self, home):
