@@ -58,7 +58,7 @@ class PlanGuard(unittest.TestCase):
         self.assertEqual(r["verdict"], "SAFE")
 
     def test_cli_exit_codes(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as f:
             json.dump({"resource_changes": [rc("aws_ebs_volume.s", "aws_ebs_volume", ["delete"])]}, f)
         p = subprocess.run([sys.executable, os.path.join(ROOT, "scripts", "plan_guard.py"), f.name], capture_output=True, text=True)
         self.assertEqual(p.returncode, 3); self.assertIn("VERDICT: BLOCKED", p.stdout)

@@ -179,7 +179,7 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
     try:
-        with open(a.plan_json) as f:
+        with open(a.plan_json, encoding="utf-8") as f:
             plan = json.load(f)
     except (OSError, ValueError) as e:
         print(f"plan_guard: cannot read plan: {e}", file=sys.stderr)
