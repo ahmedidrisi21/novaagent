@@ -218,6 +218,10 @@ def _build_parser() -> argparse.ArgumentParser:
     ch_providers = channels_sub.add_parser("providers", help="channels NOVA offers, and the evidence")
     ch_providers.add_argument("--json", action="store_true")
 
+    from nova.communications.cli import register as register_calls
+
+    register_calls(sub)
+
     work_cmd = sub.add_parser("work", help="act on work already on the board")
     work_sub = work_cmd.add_subparsers(dest="work_command", required=True)
 
@@ -1024,6 +1028,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         if args.command == "work":
             return _work(args)
+
+        if args.command == "calls":
+            from nova.communications.cli import run as run_calls
+
+            return run_calls(
+                args, lambda tenant: get_runtime(args.runtime, home=args.home, tenant_id=tenant)
+            )
 
         if args.command == "deploy":
             return _deploy(args)

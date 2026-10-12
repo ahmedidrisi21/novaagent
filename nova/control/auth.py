@@ -126,6 +126,15 @@ WRITE_ROUTES: Mapping[str, str] = {
     "/objectives/submit": "admin",
     # Making the runtime deliver declared conversations to granted agents.
     "/channels/apply": "admin",
+    # Approving, rejecting or ending one phone call. Admin: approving dials a real person,
+    # and the approval is re-checked against consent and calling hours when it is given.
+    "/communications/calls/decide": "admin",
+    # Accepting or rejecting a value a call proposed for a customer record. Admin: an
+    # approval makes it a person's value, which later calls cannot overwrite.
+    "/communications/reviews/decide": "admin",
+    # Approving or rejecting what a call proposed doing: a callback, an email, a task.
+    # Admin: approving sends the email or places the call.
+    "/communications/calls/plan": "admin",
     # Pausing, resuming or deleting a schedule the runtime already holds. Admin:
     # stopping a nightly reconciliation is as consequential as releasing held work.
     "/automations/decide": "admin",

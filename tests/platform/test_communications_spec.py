@@ -13,7 +13,7 @@ import yaml
 from nova.channels.providers import Verification
 from nova.communications import Contact, catalogue, decide_call, parse_communications
 from nova.communications.gate import ALLOW, DENY, REQUIRE_APPROVAL, CallFacts
-from nova.communications.providers import TELEPHONY_CAPABILITIES, VOICE_CAPABILITIES, Kind
+from nova.communications.providers import CAPABILITY_NAMES
 from nova.control import ControlAPI
 from nova.control.auth import Principal
 from nova.errors import SpecError
@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BASE = {
     "communications": {
         "allow_test_providers": True,
+        "disclosure": "Hi, this is an AI assistant calling for Acme.",
         "voice_providers": ["mock-voice"],
         "telephony_providers": ["mock-telephony"],
         "caller_ids": ["+15555550100"],
@@ -45,11 +46,15 @@ BASE = {
 }
 
 
+#: Profile keys BASE leaves at their defaults, so a change to them lands on the profile.
+PROFILE_ONLY = {"recording", "approval", "max_call_seconds"}
+
+
 def doc(**changes):
     data = copy.deepcopy(BASE)
     profile = data["communications"]["agents"][0]
     for key, value in changes.items():
-        if key in profile:
+        if key in profile or key in PROFILE_ONLY:
             profile[key] = value
         else:
             data["communications"][key] = value
@@ -66,7 +71,7 @@ def doc(**changes):
         ({"voice": {"primary": "openai-live"}}, "voice"),      # not in the tenant allowlist
         ({"purposes": ["unknown"]}, "purposes"),
         ({"contact_groups": []}, "contact_groups"),
-        ({"recording": {"enabled": True}}, "recording"),       # not built: refused, not ignored
+        ({"recording": {"enabled": True}}, "legal_basis"),     # recording needs a stated basis
         ({"api_key": "sk-123"}, "api_key"),
     ],
 )
@@ -154,8 +159,7 @@ def test_first_contact_needs_approval_and_later_ones_do_not():
 
 def test_every_capability_answers_a_question_the_catalogue_asks():
     for provider in catalogue():
-        asked = VOICE_CAPABILITIES if provider.kind is Kind.VOICE else TELEPHONY_CAPABILITIES
-        assert set(provider.capabilities) <= set(asked), provider.id
+        assert set(provider.capabilities) <= set(CAPABILITY_NAMES[provider.kind]), provider.id
 
 
 def test_nothing_claims_more_than_vendor_documentation_without_code_to_show_for_it():

@@ -10,8 +10,9 @@ on purpose.
 version control. Carrier and voice credentials live with the gateway, never in a bundle and
 never in an agent's environment.
 
-Recording is deliberately absent. It needs consent capture and pause/resume, which do not
-exist yet, so an unknown ``recording:`` key is refused rather than accepted and ignored.
+Recording is off unless a profile turns it on, and turning it on requires a written legal
+basis: the field is the record that somebody decided, not a checkbox. Consent is then asked
+on every call, by the carrier, before any model is on the line.
 """
 
 from __future__ import annotations
@@ -23,6 +24,13 @@ from typing import Any, Mapping, Optional, Sequence
 
 from nova._fields import Doc
 from nova.communications.providers import Kind, get_provider
+from nova.communications.spec_actions import (
+    ActionsSpec,
+    EmailSpec,
+    check_purpose_actions,
+    parse_actions,
+    parse_email,
+)
 from nova.errors import SpecError
 
 COMMUNICATIONS_FILE = "communications.yaml"
@@ -44,12 +52,90 @@ CONSENT_MARKETING_WRITTEN = "marketing_written"
 CONSENT_KINDS = (CONSENT_AI_VOICE, CONSENT_MARKETING_WRITTEN)
 
 
+FIELD_KINDS = ("text", "number", "boolean", "date", "choice")
+_ATTRIBUTE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    """One thing a call of this purpose should establish, and where it may be written.
+
+    ``contact_attribute`` names the contact field a value may update; absent, the value is
+    kept on the call record only. ``auto_apply`` is the confidence at or above which a
+    value updates the contact without a person reviewing it — it never overwrites a value
+    a person entered, whatever the confidence.
+    """
+
+    name: str
+    kind: str = "text"
+    description: str = ""
+    options: tuple[str, ...] = ()
+    contact_attribute: str = ""
+    auto_apply: float = 0.9
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": self.name, "kind": self.kind,
+                               "description": self.description, "auto_apply": self.auto_apply}
+        if self.options:
+            out["options"] = list(self.options)
+        if self.contact_attribute:
+            out["contact_attribute"] = self.contact_attribute
+        return out
+
+
+def _field(doc: Doc, where: str) -> FieldSpec:
+    name = doc.str_("name", required=True)
+    if not _ATTRIBUTE.match(name):
+        raise SpecError("must be lowercase letters, digits and underscores",
+                        field=f"{where}.name", source=doc.source)
+    kind = doc.choice("kind", FIELD_KINDS, default="text") or "text"
+    options = tuple(doc.str_list("options"))
+    if (kind == "choice") != bool(options):
+        raise SpecError("options are required for kind choice, and only for it",
+                        field=f"{where}.options", source=doc.source)
+    attribute = doc.str_("contact_attribute")
+    if attribute and not _ATTRIBUTE.match(attribute):
+        raise SpecError("must be lowercase letters, digits and underscores",
+                        field=f"{where}.contact_attribute", source=doc.source)
+    raw = doc._raw("auto_apply")
+    if raw is None:
+        auto = 0.9
+    elif isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 <= raw <= 1:
+        raise SpecError("must be a confidence between 0 and 1 (1 means always review)",
+                        field=f"{where}.auto_apply", source=doc.source)
+    else:
+        auto = float(raw)
+    spec = FieldSpec(name=name, kind=kind, description=doc.str_("description"),
+                     options=options, contact_attribute=attribute, auto_apply=auto)
+    doc.reject_unknown()
+    return spec
+
+
+@dataclass(frozen=True)
+class ExtractionSpec:
+    """The model that reads finished calls. Its key lives with the gateway."""
+
+    llm_base_url: str = ""
+    llm_model: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if v}
+
+
 @dataclass(frozen=True)
 class Purpose:
     id: str
     description: str = ""
     #: A marketing purpose needs prior express written consent on top of AI-voice consent.
     marketing: bool = False
+    #: What the voice engine is told the call is for and how to conduct it. Tenant text,
+    #: reviewed like any other prompt; the model never writes its own.
+    instructions: str = ""
+    #: What a call of this purpose should establish. Empty means no extraction.
+    fields: tuple[FieldSpec, ...] = ()
+    #: Post-call action kinds a call of this purpose may propose. Their tiers are the
+    #: tenant's, in ``communications.actions``.
+    actions: tuple[str, ...] = ()
 
     def required_consents(self) -> tuple[str, ...]:
         if self.marketing:
@@ -57,7 +143,14 @@ class Purpose:
         return (CONSENT_AI_VOICE,)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "description": self.description, "marketing": self.marketing}
+        return {
+            "id": self.id,
+            "description": self.description,
+            "marketing": self.marketing,
+            "instructions": self.instructions,
+            "fields": [f.to_dict() for f in self.fields],
+            "actions": list(self.actions),
+        }
 
 
 @dataclass(frozen=True)
@@ -80,6 +173,32 @@ class VoiceChoice:
         }
 
 
+RECORDING_REFUSAL = ("continue", "end")
+
+DEFAULT_CONSENT_PROMPT = (
+    "May we record this call? Press 1 or say yes to allow it. Press 2 or say no to "
+    "continue without recording."
+)
+
+
+@dataclass(frozen=True)
+class RecordingSpec:
+    """Whether an agent's calls may be recorded, and on what terms."""
+
+    enabled: bool = False
+    #: Why recording is lawful for this purpose and market, in the tenant's words.
+    legal_basis: str = ""
+    retention_days: int = 90
+    #: What happens when the person says no: carry on unrecorded, or end politely.
+    on_refusal: str = "continue"
+
+    def to_dict(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"enabled": False}
+        return {"enabled": True, "legal_basis": self.legal_basis,
+                "retention_days": self.retention_days, "on_refusal": self.on_refusal}
+
+
 @dataclass(frozen=True)
 class CallingProfile:
     """One agent's phone grant."""
@@ -95,9 +214,16 @@ class CallingProfile:
     max_call_seconds: int = 300
     max_concurrent_calls: int = 1
     max_calls_per_day: int = 20
+    recording: RecordingSpec = field(default_factory=RecordingSpec)
+    #: Days a redacted transcript is kept after extraction. 0, the default, deletes it as
+    #: soon as the call's fields are extracted: the structured record is what the
+    #: business needs, and a transcript nobody reads is only a liability.
+    keep_transcript_days: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "recording": self.recording.to_dict(),
+            "keep_transcript_days": self.keep_transcript_days,
             "agent": self.agent,
             "outbound": self.outbound,
             "telephony": self.telephony,
@@ -113,6 +239,24 @@ class CallingProfile:
 
 
 @dataclass(frozen=True)
+class CascadeSpec:
+    """The cascaded engine's reply model and speech models. Keys live with the gateway."""
+
+    llm_base_url: str = ""
+    llm_model: str = ""
+    stt_model: str = ""
+    tts_model: str = ""
+    cartesia_version: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if v}
+
+
+#: The engine whose voice names a Cartesia voice id and whose replies need a model.
+CASCADED_ENGINE = "deepgram-cartesia"
+
+
+@dataclass(frozen=True)
 class CommunicationsSpec:
     voice_providers: tuple[str, ...] = ()
     telephony_providers: tuple[str, ...] = ()
@@ -123,6 +267,17 @@ class CommunicationsSpec:
     purposes: Mapping[str, Purpose] = field(default_factory=dict)
     profiles: tuple[CallingProfile, ...] = ()
     allow_test_providers: bool = False
+    #: Spoken by the carrier, word for word, before any model is on the line.
+    disclosure: str = ""
+    cascade: CascadeSpec = field(default_factory=CascadeSpec)
+    #: The public HTTPS address carriers and voice engines call back on. Deployment
+    #: configuration, so it can be overridden on the command line.
+    public_url: str = ""
+    #: Asked by the carrier before recording, when an agent's profile records.
+    consent_prompt: str = DEFAULT_CONSENT_PROMPT
+    extraction: ExtractionSpec = field(default_factory=ExtractionSpec)
+    actions: ActionsSpec = field(default_factory=ActionsSpec)
+    email: EmailSpec = field(default_factory=EmailSpec)
 
     @property
     def declared(self) -> bool:
@@ -141,6 +296,13 @@ class CommunicationsSpec:
             "caller_ids": list(self.caller_ids),
             "calling_hours": {"start": _fmt(self.window_start), "end": _fmt(self.window_end)},
             "allow_test_providers": self.allow_test_providers,
+            "disclosure": self.disclosure,
+            "cascade": self.cascade.to_dict(),
+            "public_url": self.public_url,
+            "consent_prompt": self.consent_prompt,
+            "extraction": self.extraction.to_dict(),
+            "actions": self.actions.to_dict(),
+            "email": self.email.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -228,6 +390,8 @@ def _profile(doc: Doc, index: int, spec_so_far: Mapping[str, Any]) -> CallingPro
         voice=voice_doc.str_("voice"),
     )
     voice_doc.reject_unknown()
+    if CASCADED_ENGINE in voice.ordered and not voice.voice:
+        raise fail("voice.voice", f"is required with {CASCADED_ENGINE!r}: the Cartesia voice id")
     for engine in voice.ordered:
         if engine not in spec_so_far["voice_providers"]:
             raise fail("voice", f"{engine!r} is not in this tenant's voice_providers")
@@ -257,9 +421,30 @@ def _profile(doc: Doc, index: int, spec_so_far: Mapping[str, Any]) -> CallingPro
         max_call_seconds=doc.int_("max_call_seconds", default=300, minimum=30, maximum=3600),
         max_concurrent_calls=doc.int_("max_concurrent_calls", default=1, minimum=1, maximum=100),
         max_calls_per_day=doc.int_("max_calls_per_day", default=20, minimum=1, maximum=10000),
+        recording=_recording(doc.child("recording"), where),
+        keep_transcript_days=doc.int_("keep_transcript_days", default=0, minimum=0, maximum=3650),
     )
     doc.reject_unknown()
     return profile
+
+
+def _recording(doc: Optional[Doc], where: str) -> RecordingSpec:
+    if doc is None:
+        return RecordingSpec()
+    spec = RecordingSpec(
+        enabled=doc.bool_("enabled", default=False),
+        legal_basis=doc.str_("legal_basis"),
+        retention_days=doc.int_("retention_days", default=90, minimum=1, maximum=3650),
+        on_refusal=doc.choice("on_refusal", RECORDING_REFUSAL, default="continue") or "continue",
+    )
+    doc.reject_unknown()
+    if spec.enabled and len(spec.legal_basis) < 20:
+        raise SpecError(
+            "is required to record calls: say why recording is lawful for this purpose and "
+            "market (and who reviewed it), in at least a sentence",
+            field=f"{where}.recording.legal_basis", source=doc.source,
+        )
+    return spec
 
 
 def parse_communications(
@@ -296,18 +481,35 @@ def parse_communications(
                 "start must be before end", field="communications.calling_hours", source=source
             )
 
+    actions = parse_actions(doc.child("actions"))
+    email = parse_email(doc.child("email"), allow_test=allow_test)
     purposes: dict[str, Purpose] = {}
     raw_purposes = doc._raw("purposes") or []
     if not isinstance(raw_purposes, list):
         raise SpecError("must be a list", field="communications.purposes", source=source)
     for index, item in enumerate(raw_purposes):
         pdoc = Doc(item, source=source, prefix=f"communications.purposes[{index}]", env=env)
+        where = f"communications.purposes[{index}]"
+        raw_fields = pdoc._raw("fields") or []
+        if not isinstance(raw_fields, list):
+            raise SpecError("must be a list", field=f"{where}.fields", source=source)
+        fields = tuple(
+            _field(Doc(item, source=source, prefix=f"{where}.fields[{i}]", env=env),
+                   f"{where}.fields[{i}]")
+            for i, item in enumerate(raw_fields)
+        )
+        if len({f.name for f in fields}) != len(fields):
+            raise SpecError("field names must be unique", field=f"{where}.fields", source=source)
         purpose = Purpose(
             id=pdoc.identifier("id"),
             description=pdoc.str_("description"),
             marketing=pdoc.bool_("marketing", default=False),
+            instructions=pdoc.str_("instructions"),
+            fields=fields,
+            actions=tuple(pdoc.str_list("actions")),
         )
         pdoc.reject_unknown()
+        check_purpose_actions(purpose.actions, actions, f"{where}.actions", source)
         if purpose.id in purposes:
             raise SpecError(
                 f"purpose {purpose.id!r} is declared twice",
@@ -336,7 +538,61 @@ def parse_communications(
                 source=source,
             )
         profiles.append(profile)
+    disclosure = doc.str_("disclosure")
+    public_url = doc.str_("public_url")
+    consent_prompt = doc.str_("consent_prompt") or DEFAULT_CONSENT_PROMPT
+    extraction = ExtractionSpec()
+    extraction_doc = doc.child("extraction")
+    if extraction_doc is not None:
+        extraction = ExtractionSpec(llm_base_url=extraction_doc.str_("llm_base_url"),
+                                    llm_model=extraction_doc.str_("llm_model"))
+        extraction_doc.reject_unknown()
+    if any(p.fields or p.actions for p in purposes.values()) and not (
+        extraction.llm_base_url.startswith("https://") and extraction.llm_model
+    ):
+        raise SpecError("a purpose declares fields or actions, so extraction.llm_base_url "
+                        "(https://) and "
+                        "extraction.llm_model are required — the model that reads finished calls",
+                        field="communications.extraction", source=source)
+    if public_url and not public_url.startswith("https://"):
+        raise SpecError("must be an https:// URL — carriers only call back over HTTPS",
+                        field="communications.public_url", source=source)
+    cascade = CascadeSpec()
+    cascade_doc = doc.child("cascade")
+    if cascade_doc is not None:
+        cascade = CascadeSpec(
+            llm_base_url=cascade_doc.str_("llm_base_url"),
+            llm_model=cascade_doc.str_("llm_model"),
+            stt_model=cascade_doc.str_("stt_model"),
+            tts_model=cascade_doc.str_("tts_model"),
+            cartesia_version=cascade_doc.str_("cartesia_version"),
+        )
+        cascade_doc.reject_unknown()
     doc.reject_unknown()
+    if CASCADED_ENGINE in voice and not (cascade.llm_base_url and cascade.llm_model):
+        raise SpecError(
+            f"{CASCADED_ENGINE!r} needs cascade.llm_base_url and cascade.llm_model — the "
+            "model that writes the agent's replies",
+            field="communications.cascade",
+            source=source,
+        )
+    if cascade.llm_base_url and not cascade.llm_base_url.startswith("https://"):
+        raise SpecError("must be an https:// URL", field="communications.cascade.llm_base_url",
+                        source=source)
+    email_rule = actions.rule("follow_up_email")
+    if email_rule is not None and email_rule.tier != "never" and not email.provider:
+        raise SpecError("follow-up emails are configured, so communications.email (provider "
+                        "and from) is required", field="communications.email", source=source)
+    if email.provider and not public_url:
+        raise SpecError("is required to send email: every email carries an unsubscribe link "
+                        "to it", field="communications.public_url", source=source)
+    if profiles and not disclosure:
+        raise SpecError(
+            "is required once any agent may call — the words spoken before the agent, "
+            "saying it is an AI and who it calls for",
+            field="communications.disclosure",
+            source=source,
+        )
 
     return CommunicationsSpec(
         voice_providers=voice,
@@ -347,6 +603,13 @@ def parse_communications(
         purposes=purposes,
         profiles=tuple(profiles),
         allow_test_providers=allow_test,
+        disclosure=disclosure,
+        cascade=cascade,
+        public_url=public_url,
+        consent_prompt=consent_prompt,
+        extraction=extraction,
+        actions=actions,
+        email=email,
     )
 
 
@@ -370,6 +633,12 @@ def load_communications(
 
 def check_agents_exist(spec: CommunicationsSpec, agent_ids: Sequence[str]) -> None:
     known = set(agent_ids)
+    for rule in spec.actions.rules.values():
+        if rule.assignee and rule.assignee not in known:
+            raise SpecError(
+                f"{rule.kind} work goes to {rule.assignee!r}, which this bundle does not define",
+                field=f"communications.actions.rules.{rule.kind}.assignee",
+            )
     for profile in spec.profiles:
         if profile.agent not in known:
             raise SpecError(

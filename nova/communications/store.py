@@ -30,6 +30,7 @@ from nova.communications.contracts import (
     advances,
 )
 from nova.communications.gate import Contact
+from nova.communications.store_actions import ACTIONS_SCHEMA, ActionsStoreMixin
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS contacts (
     phone TEXT NOT NULL,
     timezone TEXT NOT NULL DEFAULT '',
     groups_json TEXT NOT NULL DEFAULT '[]',
+    name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (tenant_id, contact_id)
 );
 CREATE TABLE IF NOT EXISTS consents (
@@ -72,12 +75,82 @@ CREATE TABLE IF NOT EXISTS calls (
     approved_by TEXT NOT NULL DEFAULT '',
     -- Set once, by the dial claim. Daily caps count this, not the request time.
     dialled_at TEXT NOT NULL DEFAULT '',
+    voice_engine TEXT NOT NULL DEFAULT '',
+    voice_session_id TEXT NOT NULL DEFAULT '',
+    -- '' (never asked) | granted | refused | unclear. Evidence is what the caller pressed
+    -- or said, as the carrier heard it.
+    recording_consent TEXT NOT NULL DEFAULT '',
+    recording_evidence TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE (tenant_id, idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS calls_by_agent ON calls (tenant_id, agent, status);
 CREATE INDEX IF NOT EXISTS calls_by_ref ON calls (telephony, provider_call_ref);
+CREATE TABLE IF NOT EXISTS call_recordings (
+    tenant_id TEXT NOT NULL,
+    recording_ref TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    -- recording | paused | completed | absent | failed | deleted
+    state TEXT NOT NULL,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    retention_until TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant_id, recording_ref)
+);
+CREATE INDEX IF NOT EXISTS recordings_by_call ON call_recordings (tenant_id, call_id);
+-- Redacted, one row per finished turn. Deleted after extraction unless the profile keeps it.
+CREATE TABLE IF NOT EXISTS call_turns (
+    tenant_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    speaker TEXT NOT NULL,
+    text TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, call_id, seq)
+);
+CREATE TABLE IF NOT EXISTS call_extractions (
+    tenant_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    fields_json TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    transcript_until TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, call_id)
+);
+-- A contact's fields, each with where its value came from: a person, or a call (with the
+-- quote that justified it). A call never overwrites a person's value.
+CREATE TABLE IF NOT EXISTS contact_attributes (
+    tenant_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source TEXT NOT NULL,
+    call_id TEXT NOT NULL DEFAULT '',
+    quote TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, contact_id, name)
+);
+CREATE TABLE IF NOT EXISTS review_queue (
+    tenant_id TEXT NOT NULL,
+    review_id TEXT NOT NULL,
+    contact_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    current_value TEXT NOT NULL DEFAULT '',
+    call_id TEXT NOT NULL,
+    quote TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    decided_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (tenant_id, review_id)
+);
 CREATE TABLE IF NOT EXISTS call_events (
     provider TEXT NOT NULL,
     provider_event_id TEXT NOT NULL,
@@ -109,6 +182,11 @@ class CallRecord:
     approved_by: str
     created_at: str
     updated_at: str
+    #: The engine the call was bridged to, chosen at answer time, and its session.
+    voice_engine: str = ""
+    voice_session_id: str = ""
+    recording_consent: str = ""
+    recording_evidence: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -122,6 +200,8 @@ class CallRecord:
             "failure": self.failure,
             "reason": self.reason,
             "approved_by": self.approved_by,
+            "voice_engine": self.voice_engine,
+            "recording_consent": self.recording_consent,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -130,7 +210,7 @@ class CallRecord:
 _CALL_COLUMNS = (
     "call_id, tenant_id, idempotency_key, agent, contact_id, purpose, task_id, telephony, "
     "action_digest, status, failure, reason, provider_call_ref, approved_by, created_at, "
-    "updated_at"
+    "updated_at, voice_engine, voice_session_id, recording_consent, recording_evidence"
 )
 
 
@@ -142,7 +222,7 @@ def _call(row: Optional[tuple]) -> Optional[CallRecord]:
     return CallRecord(*values)
 
 
-class CommsStore:
+class CommsStore(ActionsStoreMixin):
     def __init__(self, path: Path | str, *, tenant_id: str) -> None:
         self.path = Path(path)
         self.tenant_id = tenant_id
@@ -153,6 +233,20 @@ class CommsStore:
         )
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        self._db.executescript(ACTIONS_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add columns a store created by an earlier version lacks. Additive only."""
+        have = {row[1] for row in self._db.execute("PRAGMA table_info(calls)")}
+        for column in ("voice_engine", "voice_session_id", "recording_consent",
+                       "recording_evidence"):
+            if column not in have:
+                self._db.execute(f"ALTER TABLE calls ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+        have = {row[1] for row in self._db.execute("PRAGMA table_info(contacts)")}
+        for column in ("name", "email"):
+            if column not in have:
+                self._db.execute(f"ALTER TABLE contacts ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
     def close(self) -> None:
         self._db.close()
@@ -169,23 +263,23 @@ class CommsStore:
 
     def put_contact(self, contact: Contact) -> None:
         self._write(
-            "INSERT INTO contacts (tenant_id, contact_id, phone, timezone, groups_json) "
-            "VALUES (?, ?, ?, ?, ?) ON CONFLICT (tenant_id, contact_id) DO UPDATE SET "
-            "phone = excluded.phone, timezone = excluded.timezone, "
-            "groups_json = excluded.groups_json",
+            "INSERT INTO contacts (tenant_id, contact_id, phone, timezone, groups_json, name, "
+            "email) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, contact_id) DO UPDATE "
+            "SET phone = excluded.phone, timezone = excluded.timezone, "
+            "groups_json = excluded.groups_json, name = excluded.name, email = excluded.email",
             self.tenant_id, contact.contact_id, contact.phone, contact.timezone,
-            json.dumps(list(contact.groups)),
+            json.dumps(list(contact.groups)), contact.name, contact.email,
         )
 
     def contact(self, contact_id: str) -> Optional[Contact]:
         row = self._one(
-            "SELECT contact_id, phone, timezone, groups_json FROM contacts "
+            "SELECT contact_id, phone, timezone, groups_json, name, email FROM contacts "
             "WHERE tenant_id = ? AND contact_id = ?",
             self.tenant_id, contact_id,
         )
         if row is None:
             return None
-        return Contact(row[0], row[1], row[2], tuple(json.loads(row[3])))
+        return Contact(row[0], row[1], row[2], tuple(json.loads(row[3])), row[4], row[5])
 
     def grant_consent(self, contact_id: str, kind: str, *, evidence: str, at: str) -> None:
         """Record consent. ``evidence`` says where it came from — a form id, a call id."""
@@ -245,7 +339,7 @@ class CommsStore:
         try:
             self._write(
                 f"INSERT INTO calls ({_CALL_COLUMNS}) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', '', ?, ?)",
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, '', '', ?, ?, '', '', '', '')",
                 call_id, self.tenant_id, idempotency_key, agent, contact_id, purpose,
                 task_id, telephony, action_digest, status.value, reason, at, at,
             )
@@ -271,6 +365,39 @@ class CommsStore:
             "WHERE tenant_id = ? AND telephony = ? AND provider_call_ref = ?",
             self.tenant_id, telephony, provider_call_ref,
         ))
+
+    def call_for_carrier(self, telephony: str, call_id: str, ref: str) -> Optional[CallRecord]:
+        """The call a carrier callback names by our id, if it belongs to that carrier and the
+        reference is not already another call's. Adopts ``ref`` when none was stored yet —
+        the callback beat :meth:`set_provider_ref`."""
+        record = self.call(call_id)
+        if record is None or record.telephony != telephony:
+            return None
+        if record.provider_call_ref and record.provider_call_ref != ref:
+            return None
+        if not record.provider_call_ref:
+            self._write(
+                "UPDATE calls SET provider_call_ref = ? "
+                "WHERE tenant_id = ? AND call_id = ? AND provider_call_ref = ''",
+                ref, self.tenant_id, call_id,
+            )
+            record = self.call(call_id)
+        return record
+
+    def set_voice(self, call_id: str, *, engine: str, session_id: str = "", at: str) -> None:
+        self._write(
+            "UPDATE calls SET voice_engine = ?, voice_session_id = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ?",
+            engine, session_id, at, self.tenant_id, call_id,
+        )
+
+    def claim_session(self, call_id: str, *, engine: str, session_id: str, at: str) -> bool:
+        """Bind a voice session to a call exactly once. False means one is already bound."""
+        return self._write(
+            "UPDATE calls SET voice_session_id = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ? AND voice_engine = ? AND voice_session_id = ''",
+            session_id, at, self.tenant_id, call_id, engine,
+        ) == 1
 
     def claim_for_dial(self, call_id: str, *, approved_by: str, at: str) -> bool:
         """Move a call into ``initiated`` exactly once. False means someone else did."""
@@ -320,6 +447,211 @@ class CommsStore:
             except BaseException:
                 self._db.execute("ROLLBACK")
                 raise
+
+    def calls_with_status(
+        self, statuses, *, updated_before: str = "", limit: int = 500
+    ) -> list[CallRecord]:
+        """Calls in any of ``statuses``, oldest change first, optionally untouched since a time."""
+        values = [CallStatus(s).value for s in statuses]
+        if not values:
+            return []
+        marks = ", ".join("?" for _ in values)
+        sql = (f"SELECT {_CALL_COLUMNS} FROM calls WHERE tenant_id = ? AND status IN ({marks})")
+        args: list = [self.tenant_id, *values]
+        if updated_before:
+            sql += " AND updated_at < ?"
+            args.append(updated_before)
+        sql += " ORDER BY updated_at LIMIT ?"
+        args.append(int(limit))
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        return [_call(row) for row in rows]
+
+    def recent_calls(
+        self, *, limit: int = 50, agent: str = "", status: str = ""
+    ) -> list[CallRecord]:
+        """Newest first, for the call monitor."""
+        sql = f"SELECT {_CALL_COLUMNS} FROM calls WHERE tenant_id = ?"
+        args: list = [self.tenant_id]
+        if agent:
+            sql += " AND agent = ?"
+            args.append(agent)
+        if status:
+            sql += " AND status = ?"
+            args.append(CallStatus(status).value)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        args.append(max(1, min(int(limit), 500)))
+        with self._lock:
+            rows = self._db.execute(sql, args).fetchall()
+        return [_call(row) for row in rows]
+
+    # -- recordings -----------------------------------------------------------------------
+
+    def set_recording_consent(self, call_id: str, outcome: str, evidence: str, *, at: str) -> bool:
+        """Record the answer once. False if this call already has one: the first answer stands."""
+        return self._write(
+            "UPDATE calls SET recording_consent = ?, recording_evidence = ?, updated_at = ? "
+            "WHERE tenant_id = ? AND call_id = ? AND recording_consent = ''",
+            outcome, evidence[:200], at, self.tenant_id, call_id,
+        ) == 1
+
+    def add_recording(self, call_id: str, recording_ref: str, *, at: str, retention_until: str) -> None:
+        self._write(
+            "INSERT OR IGNORE INTO call_recordings (tenant_id, recording_ref, call_id, state, "
+            "started_at, retention_until) VALUES (?, ?, ?, 'recording', ?, ?)",
+            self.tenant_id, recording_ref, call_id, at, retention_until,
+        )
+
+    def set_recording_state(self, recording_ref: str, state: str, *, duration: int = 0,
+                            at: str = "") -> None:
+        """Move a recording on. A deleted recording stays deleted whatever arrives later."""
+        self._write(
+            "UPDATE call_recordings SET state = ?, "
+            "duration_seconds = CASE WHEN ? > 0 THEN ? ELSE duration_seconds END, "
+            "deleted_at = CASE WHEN ? = 'deleted' THEN ? ELSE deleted_at END "
+            "WHERE tenant_id = ? AND recording_ref = ? AND state != 'deleted'",
+            state, duration, duration, state, at, self.tenant_id, recording_ref,
+        )
+
+    def recordings(self, *, call_id: str = "", contact_id: str = "",
+                   due_before: str = "") -> list[dict]:
+        """Recordings by call, by contact, or past retention — never the deleted ones."""
+        sql = ("SELECT r.recording_ref, r.call_id, r.state, r.duration_seconds, r.started_at, "
+               "r.retention_until FROM call_recordings r JOIN calls c "
+               "ON c.call_id = r.call_id AND c.tenant_id = r.tenant_id "
+               "WHERE r.tenant_id = ? AND r.state != 'deleted'")
+        args: list = [self.tenant_id]
+        if call_id:
+            sql += " AND r.call_id = ?"
+            args.append(call_id)
+        if contact_id:
+            sql += " AND c.contact_id = ?"
+            args.append(contact_id)
+        if due_before:
+            sql += " AND r.retention_until < ?"
+            args.append(due_before)
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY r.started_at", args).fetchall()
+        keys = ("recording_ref", "call_id", "state", "duration_seconds", "started_at",
+                "retention_until")
+        return [dict(zip(keys, row)) for row in rows]
+
+    # -- transcripts ----------------------------------------------------------------------
+
+    def append_turn(self, call_id: str, speaker: str, text: str, *, at: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO call_turns (tenant_id, call_id, seq, speaker, text, at) "
+                "SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ? FROM call_turns "
+                "WHERE tenant_id = ? AND call_id = ?",
+                (self.tenant_id, call_id, speaker, text, at, self.tenant_id, call_id),
+            )
+
+    def turns(self, call_id: str) -> list[tuple[str, str]]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT speaker, text FROM call_turns WHERE tenant_id = ? AND call_id = ? "
+                "ORDER BY seq", (self.tenant_id, call_id)).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def delete_turns(self, call_id: str) -> None:
+        self._write("DELETE FROM call_turns WHERE tenant_id = ? AND call_id = ?",
+                    self.tenant_id, call_id)
+
+    def calls_awaiting_extraction(self, *, limit: int = 20) -> list[str]:
+        """Finished calls with a transcript and no extraction yet, oldest first."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.call_id FROM calls c WHERE c.tenant_id = ? AND c.status IN "
+                "('completed', 'failed', 'cancelled') "
+                "AND EXISTS (SELECT 1 FROM call_turns t WHERE t.tenant_id = c.tenant_id "
+                "AND t.call_id = c.call_id) "
+                "AND NOT EXISTS (SELECT 1 FROM call_extractions e WHERE "
+                "e.tenant_id = c.tenant_id AND e.call_id = c.call_id) "
+                "ORDER BY c.updated_at LIMIT ?", (self.tenant_id, int(limit))).fetchall()
+        return [row[0] for row in rows]
+
+    def extraction(self, call_id: str) -> Optional[dict]:
+        row = self._one(
+            "SELECT model, fields_json, summary, error, created_at FROM call_extractions "
+            "WHERE tenant_id = ? AND call_id = ?", self.tenant_id, call_id)
+        if row is None:
+            return None
+        return {"model": row[0], "fields": json.loads(row[1]), "summary": row[2],
+                "error": row[3], "created_at": row[4]}
+
+    def transcripts_due(self, before: str) -> list[str]:
+        """Calls whose kept transcript has passed its keep-until date."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT e.call_id FROM call_extractions e WHERE e.tenant_id = ? AND "
+                "e.transcript_until != '' AND e.transcript_until < ? AND EXISTS (SELECT 1 FROM "
+                "call_turns t WHERE t.tenant_id = e.tenant_id AND t.call_id = e.call_id)",
+                (self.tenant_id, before)).fetchall()
+        return [row[0] for row in rows]
+
+    # -- contact attributes and their review queue ---------------------------------------
+
+    def attribute(self, contact_id: str, name: str) -> Optional[dict]:
+        row = self._one(
+            "SELECT value, source, call_id, quote, updated_at FROM contact_attributes "
+            "WHERE tenant_id = ? AND contact_id = ? AND name = ?",
+            self.tenant_id, contact_id, name)
+        if row is None:
+            return None
+        return dict(zip(("value", "source", "call_id", "quote", "updated_at"), row))
+
+    def attributes(self, contact_id: str) -> dict[str, dict]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT name, value, source, call_id, quote, updated_at FROM contact_attributes "
+                "WHERE tenant_id = ? AND contact_id = ? ORDER BY name",
+                (self.tenant_id, contact_id)).fetchall()
+        return {row[0]: dict(zip(("value", "source", "call_id", "quote", "updated_at"), row[1:]))
+                for row in rows}
+
+    def set_attribute(self, contact_id: str, name: str, value: str, *, source: str,
+                      at: str, call_id: str = "", quote: str = "") -> None:
+        self._write(
+            "INSERT INTO contact_attributes (tenant_id, contact_id, name, value, source, call_id, "
+            "quote, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tenant_id, "
+            "contact_id, name) DO UPDATE SET value = excluded.value, source = excluded.source, "
+            "call_id = excluded.call_id, quote = excluded.quote, updated_at = excluded.updated_at",
+            self.tenant_id, contact_id, name, value, source, call_id, quote, at)
+
+    def enqueue_review(self, *, contact_id: str, name: str, value: str, current_value: str,
+                       call_id: str, quote: str, confidence: float, reason: str, at: str) -> str:
+        review_id = uuid.uuid4().hex[:12]
+        self._write(
+            "INSERT INTO review_queue (tenant_id, review_id, contact_id, name, value, "
+            "current_value, call_id, quote, confidence, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            self.tenant_id, review_id, contact_id, name, value, current_value, call_id, quote,
+            float(confidence), reason, at)
+        return review_id
+
+    _REVIEW_KEYS = ("review_id", "contact_id", "name", "value", "current_value", "call_id",
+                    "quote", "confidence", "reason", "status", "decided_by", "created_at")
+
+    def reviews(self, *, status: str = "pending", limit: int = 100) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT {', '.join(self._REVIEW_KEYS)} FROM review_queue WHERE tenant_id = ? "
+                "AND status = ? ORDER BY created_at LIMIT ?",
+                (self.tenant_id, status, int(limit))).fetchall()
+        return [dict(zip(self._REVIEW_KEYS, row)) for row in rows]
+
+    def review(self, review_id: str) -> Optional[dict]:
+        row = self._one(f"SELECT {', '.join(self._REVIEW_KEYS)} FROM review_queue "
+                        "WHERE tenant_id = ? AND review_id = ?", self.tenant_id, review_id)
+        return dict(zip(self._REVIEW_KEYS, row)) if row else None
+
+    def decide_review(self, review_id: str, *, status: str, actor: str, at: str) -> bool:
+        """Close a pending review once. False if it was not pending."""
+        return self._write(
+            "UPDATE review_queue SET status = ?, decided_by = ?, decided_at = ? "
+            "WHERE tenant_id = ? AND review_id = ? AND status = 'pending'",
+            status, actor, at, self.tenant_id, review_id) == 1
 
     def count_active(self, agent: str) -> int:
         statuses = [s.value for s in ACTIVE]

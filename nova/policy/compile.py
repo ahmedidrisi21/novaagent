@@ -145,8 +145,10 @@ def agent_digest(
     spec: AgentSpec,
     policy: Optional[CompiledPolicy],
     knowledge: Optional[Mapping[str, Any]] = None,
+    calling: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    """Stable identity of an agent as materialized: its spec, its policy, its knowledge grant.
+    """Stable identity of an agent as materialized: its spec, its policy, its knowledge grant,
+    and its calling grant (purposes only — the signing key and inbox are deployment).
 
     The single definition, used by the materializer when it writes provenance and by the
     control plane when it reports drift. Two definitions would disagree, and the
@@ -160,7 +162,7 @@ def agent_digest(
     its old name. ``index_path`` and ``audit_log`` are stripped for the same reason
     :data:`RUNTIME_INJECTED_KEYS` are: where the files live is deployment, not identity.
     """
-    if policy is None and not knowledge:
+    if policy is None and not knowledge and not calling:
         return spec.digest()
     payload: dict[str, Any] = {"spec": spec.to_dict()}
     if policy is not None:
@@ -171,6 +173,8 @@ def agent_digest(
             for key, value in knowledge.items()
             if key not in RUNTIME_INJECTED_KEYS and key not in ("index_path",)
         }
+    if calling:
+        payload["calling"] = {k: v for k, v in calling.items() if k not in ("key", "inbox")}
     return "sha256:" + hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()

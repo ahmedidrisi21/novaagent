@@ -23,6 +23,7 @@ from nova.channels.providers import Capability, Verification
 class Kind(str, Enum):
     VOICE = "voice"
     TELEPHONY = "telephony"
+    EMAIL = "email"
 
 
 #: The questions asked of every voice engine. A routing decision may only rely on a
@@ -53,6 +54,21 @@ TELEPHONY_CAPABILITIES: tuple[str, ...] = (
     "signed_webhooks",
 )
 
+#: The questions asked of every email provider.
+EMAIL_CAPABILITIES: tuple[str, ...] = (
+    # A send retried with the same key sends once.
+    "idempotent_send",
+    "delivery_events",
+    "bounce_events",
+    "signed_webhooks",
+)
+
+CAPABILITY_NAMES: Mapping[Kind, tuple[str, ...]] = {
+    Kind.VOICE: VOICE_CAPABILITIES,
+    Kind.TELEPHONY: TELEPHONY_CAPABILITIES,
+    Kind.EMAIL: EMAIL_CAPABILITIES,
+}
+
 
 @dataclass(frozen=True)
 class CommsProvider:
@@ -75,7 +91,7 @@ class CommsProvider:
         return self.capabilities.get(name, Capability(supported=None))
 
     def to_dict(self) -> dict:
-        names = VOICE_CAPABILITIES if self.kind is Kind.VOICE else TELEPHONY_CAPABILITIES
+        names = CAPABILITY_NAMES[self.kind]
         return {
             "id": self.id,
             "kind": self.kind.value,
@@ -105,20 +121,21 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         label="OpenAI GPT-Live",
         capabilities={
             "speech_to_speech": _vendor(True),
-            # Read in source: the runtime's voice mode already delegates every request to
-            # the agent as a client-delegation backend.
+            # Delegations arrive on the sideband and are answered by a read-only knowledge
+            # lookup — "tools" here means looking things up, never acting.
             "tool_calls": Capability(
                 supported=True,
-                verification=Verification.SOURCE_READ,
-                note="delegates each request to the agent; see tools/voice_live.py",
+                verification=Verification.LOCAL_VALIDATED,
+                note="read-only knowledge lookups over the sideband; no actions mid-call",
             ),
             "barge_in": _vendor(True),
-            "native_phone": _vendor(True, "vendor documents SIP plus Twilio and Telnyx paths"),
+            "native_phone": _tested(True),
             "audio_stays_in_tenant_cloud": _vendor(False),
-            "text_transcript": _vendor(True, "from session events"),
+            "text_transcript": _vendor(True, "from session events; not collected yet"),
         },
-        verification=Verification.SOURCE_READ,
-        implementation="tools/voice_live.py (desktop voice mode; no phone adapter yet)",
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/openai_live.py",
+        caveat="Exercised against a scripted stand-in only; no live call has been placed.",
     ),
     CommsProvider(
         id="elevenlabs-agents",
@@ -153,15 +170,24 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         kind=Kind.VOICE,
         label="Cascaded: Deepgram STT, the agent, Cartesia TTS",
         capabilities={
-            "speech_to_speech": _vendor(False),
-            # The agent itself is the one talking, so it has every tool it is granted.
-            "tool_calls": _vendor(True),
-            "barge_in": _vendor(True, "speech detection cancels speech output"),
-            "native_phone": _vendor(False, "needs a media bridge from the carrier"),
+            "speech_to_speech": _tested(False),
+            # Lookups are read-only knowledge passages handed to the reply model per turn.
+            "tool_calls": Capability(
+                supported=True,
+                verification=Verification.LOCAL_VALIDATED,
+                note="read-only knowledge lookups per turn; no actions mid-call",
+            ),
+            "barge_in": _tested(True),
+            "native_phone": _tested(False),
             "audio_stays_in_tenant_cloud": _vendor(False),
-            "text_transcript": _vendor(True, "every turn is text first"),
+            "text_transcript": _tested(True),
         },
-        caveat="Slightly higher latency than a speech-to-speech engine; measure before choosing.",
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/cascade.py",
+        caveat=(
+            "Exercised against scripted stand-ins only; no live call has been placed. "
+            "Slightly higher latency than a speech-to-speech engine; measure before choosing."
+        ),
     ),
     # -- carriers ------------------------------------------------------------------------
     CommsProvider(
@@ -169,14 +195,17 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         kind=Kind.TELEPHONY,
         label="Twilio Voice",
         capabilities={
-            "outbound": _vendor(True),
-            "inbound": _vendor(True),
-            "transfer": _vendor(True),
-            "answering_machine_detection": _vendor(True),
-            "recording": _vendor(True),
-            "signed_webhooks": _vendor(True),
+            "outbound": _tested(True),
+            "inbound": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "transfer": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "answering_machine_detection": _tested(True),
+            "recording": _vendor(True, "vendor supports it; this adapter does not yet"),
+            "signed_webhooks": _tested(True),
         },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/twilio.py",
         caveat=(
+            "Exercised against a scripted stand-in only; no live call has been placed. "
             "The runtime's SMS adapter reads Twilio credentials from an agent's own "
             "environment. An agent holding them can reach Twilio without this gateway; "
             "keep voice credentials out of agent environments."
@@ -194,6 +223,21 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "recording": _vendor(True),
             "signed_webhooks": _vendor(True),
         },
+    ),
+    # -- email -----------------------------------------------------------------------------
+    CommsProvider(
+        id="resend",
+        kind=Kind.EMAIL,
+        label="Resend",
+        capabilities={
+            "idempotent_send": _tested(True),
+            "delivery_events": _tested(True),
+            "bounce_events": _tested(True),
+            "signed_webhooks": _tested(True),
+        },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/resend.py",
+        caveat="Exercised against a scripted stand-in only; no live email has been sent.",
     ),
     # -- test doubles --------------------------------------------------------------------
     CommsProvider(
@@ -224,6 +268,15 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "recording": _tested(False),
             "signed_webhooks": _tested(True),
         },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/mock.py",
+        test_only=True,
+    ),
+    CommsProvider(
+        id="mock-email",
+        kind=Kind.EMAIL,
+        label="Test email provider (sends nothing)",
+        capabilities={name: _tested(True) for name in EMAIL_CAPABILITIES},
         verification=Verification.LOCAL_VALIDATED,
         implementation="nova/communications/mock.py",
         test_only=True,
