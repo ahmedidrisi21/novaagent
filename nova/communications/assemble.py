@@ -17,6 +17,9 @@ Variable                      Used for
 ``CASCADE_LLM_API_KEY``       cascaded engine: the reply model at ``cascade.llm_base_url``
 ``CALL_BRIDGE_SECRET``        signs the call token carried across the bridge (32+ chars)
 ``EXTRACTION_LLM_API_KEY``    reads finished calls into fields, at ``extraction.llm_base_url``
+``RESEND_API_KEY``            Resend: sends follow-up emails
+``RESEND_WEBHOOK_SECRET``     verifies Resend's delivery webhooks (``whsec_...``)
+``EMAIL_LINK_SECRET``         signs the unsubscribe link in every email (32+ chars)
 ============================  ============================================================
 
 Non-secret settings — which reply model, which speech models — are in
@@ -30,7 +33,7 @@ clear reason instead of the gateway refusing to start.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Mapping, Optional, Sequence
 
 from nova.audit import AuditLog
 from nova.communications.answers import index_search, knowledge_answerer
@@ -45,22 +48,29 @@ from nova.communications.contracts import TelephonyProvider, VoiceEngine
 from nova.communications.extraction import extractor_from
 from nova.communications.gateway import CallGateway
 from nova.communications.openai_live import OpenAILiveVoice
+from nova.communications.resend import ResendEmail
 from nova.communications.spec import CASCADED_ENGINE, CommunicationsSpec
 from nova.communications.store import CommsStore
 from nova.communications.twilio import TwilioTelephony
+
+if TYPE_CHECKING:
+    from nova.runtime.base import WorkItem
 
 REQUIRED_ENV: Mapping[str, tuple[str, ...]] = {
     "twilio": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
     "openai-live": ("OPENAI_API_KEY", "OPENAI_PROJECT_ID", "OPENAI_WEBHOOK_SECRET"),
     "deepgram-cartesia": ("DEEPGRAM_API_KEY", "CARTESIA_API_KEY", "CASCADE_LLM_API_KEY"),
+    "resend": ("RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"),
 }
 SECRET_ENV = "CALL_BRIDGE_SECRET"
+LINK_SECRET_ENV = "EMAIL_LINK_SECRET"
 
 
 def missing_credentials(spec: CommunicationsSpec, env: Mapping[str, str]) -> dict[str, list[str]]:
     """Per allowed provider with an adapter, the variable names still unset. Names only."""
     out: dict[str, list[str]] = {}
-    for provider in (*spec.telephony_providers, *spec.voice_providers):
+    email = (spec.email.provider,) if spec.email.provider else ()
+    for provider in (*spec.telephony_providers, *spec.voice_providers, *email):
         names = REQUIRED_ENV.get(provider)
         if names:
             missing = [name for name in names if not env.get(name)]
@@ -68,6 +78,8 @@ def missing_credentials(spec: CommunicationsSpec, env: Mapping[str, str]) -> dic
                 out[provider] = missing
     if spec.voice_providers and len(env.get(SECRET_ENV, "")) < 32:
         out["bridge"] = [SECRET_ENV]
+    if email and len(env.get(LINK_SECRET_ENV, "")) < 32:
+        out["email-links"] = [LINK_SECRET_ENV]
     return out
 
 
@@ -80,12 +92,14 @@ def build_gateway(
     public_url: str,
     knowledge_index: Optional[Path] = None,
     knowledge_grants: Optional[Mapping[str, Sequence[str]]] = None,
+    tasks: Optional[Callable[[WorkItem], str]] = None,
 ) -> CallGateway:
     """``public_url`` serves both listeners: HTTPS webhooks at its root, and the media
     bridge at the same host over ``wss://`` under ``/media/``.
 
     ``knowledge_index`` and ``knowledge_grants`` (agent id -> source ids, from the bundle)
     enable mid-call lookups. Without them calls run on their instructions alone.
+    ``tasks`` puts post-call work on the runtime's board; without it, work actions wait.
     """
     base = public_url.rstrip("/")
     missing = missing_credentials(spec, env)
@@ -126,10 +140,18 @@ def build_gateway(
             return knowledge_answerer(call_id=record.call_id, agent=record.agent,
                                       sources=sources, search=search, audit=audit)
 
+    email = None
+    if spec.email.provider == "resend" and "resend" not in missing:
+        email = ResendEmail.from_env(env)
+
     return CallGateway(
         spec, store, audit, carriers,
         voices=voices,
         call_secret=env.get(SECRET_ENV, "").encode("utf-8") if voices else b"",
         answers=answers,
         extractor=extractor_from(spec, env),
+        email=email,
+        tasks=tasks,
+        link_secret=env.get(LINK_SECRET_ENV, "").encode("utf-8"),
+        public_url=public_url,
     )

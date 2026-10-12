@@ -1,4 +1,4 @@
-"""Test doubles for a carrier and a voice engine. They place no call and play no audio.
+"""Test doubles for a carrier, a voice engine and an email provider. Nothing leaves the process.
 
 They are real implementations of the contracts, not stubs: callbacks and webhooks are
 HMAC-signed and verified, failures raise the same normalized errors a real adapter must
@@ -29,6 +29,7 @@ from nova.communications.contracts import (
     TelephonyProvider,
     VoiceSessionRequest,
 )
+from nova.communications.mail import EmailEvent, EmailProvider, EmailStatus, OutboundEmail
 
 SIGNATURE_HEADER = "x-mock-signature"
 
@@ -219,4 +220,37 @@ class MockVoice(SipVoiceEngine):
         """A signed incoming-session webhook: ``(headers, body)``."""
         body = json.dumps({"type": "incoming", "session_id": session_id, "event_id": event_id,
                            "headers": dict(sip_headers)}).encode("utf-8")
+        return {SIGNATURE_HEADER: _sign(self._secret, body)}, body
+
+
+class MockEmail(EmailProvider):
+    """An email provider that sends nothing. Idempotent on the key, as a real one must be."""
+
+    id = "mock-email"
+
+    def __init__(self, *, secret: bytes = b"mock-secret") -> None:
+        self._secret = secret
+        #: idempotency key -> (provider ref, message). One entry per distinct send.
+        self.sent: dict[str, tuple[str, OutboundEmail]] = {}
+        self.fail_next = False
+
+    def send(self, message: OutboundEmail) -> str:
+        if self.fail_next:
+            self.fail_next = False
+            raise ProviderError("mock email provider refused")
+        if message.idempotency_key not in self.sent:
+            self.sent[message.idempotency_key] = (f"mock-email-{len(self.sent) + 1}", message)
+        return self.sent[message.idempotency_key][0]
+
+    def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
+        return _signed(self._secret, headers, body)
+
+    def parse(self, headers: Mapping[str, str], body: bytes) -> list[EmailEvent]:
+        data = json.loads(body.decode("utf-8"))
+        return [EmailEvent(provider_event_id=str(data["event_id"]), provider_ref=str(data["ref"]),
+                           status=EmailStatus(data["status"]))]
+
+    def event(self, ref: str, status: EmailStatus, *, event_id: str) -> tuple[dict, bytes]:
+        """A signed delivery webhook, as the provider would send it."""
+        body = json.dumps({"event_id": event_id, "ref": ref, "status": status.value}).encode()
         return {SIGNATURE_HEADER: _sign(self._secret, body)}, body

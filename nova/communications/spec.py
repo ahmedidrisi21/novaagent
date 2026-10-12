@@ -24,6 +24,13 @@ from typing import Any, Mapping, Optional, Sequence
 
 from nova._fields import Doc
 from nova.communications.providers import Kind, get_provider
+from nova.communications.spec_actions import (
+    ActionsSpec,
+    EmailSpec,
+    check_purpose_actions,
+    parse_actions,
+    parse_email,
+)
 from nova.errors import SpecError
 
 COMMUNICATIONS_FILE = "communications.yaml"
@@ -126,6 +133,9 @@ class Purpose:
     instructions: str = ""
     #: What a call of this purpose should establish. Empty means no extraction.
     fields: tuple[FieldSpec, ...] = ()
+    #: Post-call action kinds a call of this purpose may propose. Their tiers are the
+    #: tenant's, in ``communications.actions``.
+    actions: tuple[str, ...] = ()
 
     def required_consents(self) -> tuple[str, ...]:
         if self.marketing:
@@ -139,6 +149,7 @@ class Purpose:
             "marketing": self.marketing,
             "instructions": self.instructions,
             "fields": [f.to_dict() for f in self.fields],
+            "actions": list(self.actions),
         }
 
 
@@ -265,6 +276,8 @@ class CommunicationsSpec:
     #: Asked by the carrier before recording, when an agent's profile records.
     consent_prompt: str = DEFAULT_CONSENT_PROMPT
     extraction: ExtractionSpec = field(default_factory=ExtractionSpec)
+    actions: ActionsSpec = field(default_factory=ActionsSpec)
+    email: EmailSpec = field(default_factory=EmailSpec)
 
     @property
     def declared(self) -> bool:
@@ -288,6 +301,8 @@ class CommunicationsSpec:
             "public_url": self.public_url,
             "consent_prompt": self.consent_prompt,
             "extraction": self.extraction.to_dict(),
+            "actions": self.actions.to_dict(),
+            "email": self.email.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -466,6 +481,8 @@ def parse_communications(
                 "start must be before end", field="communications.calling_hours", source=source
             )
 
+    actions = parse_actions(doc.child("actions"))
+    email = parse_email(doc.child("email"), allow_test=allow_test)
     purposes: dict[str, Purpose] = {}
     raw_purposes = doc._raw("purposes") or []
     if not isinstance(raw_purposes, list):
@@ -489,8 +506,10 @@ def parse_communications(
             marketing=pdoc.bool_("marketing", default=False),
             instructions=pdoc.str_("instructions"),
             fields=fields,
+            actions=tuple(pdoc.str_list("actions")),
         )
         pdoc.reject_unknown()
+        check_purpose_actions(purpose.actions, actions, f"{where}.actions", source)
         if purpose.id in purposes:
             raise SpecError(
                 f"purpose {purpose.id!r} is declared twice",
@@ -528,10 +547,11 @@ def parse_communications(
         extraction = ExtractionSpec(llm_base_url=extraction_doc.str_("llm_base_url"),
                                     llm_model=extraction_doc.str_("llm_model"))
         extraction_doc.reject_unknown()
-    if any(p.fields for p in purposes.values()) and not (
+    if any(p.fields or p.actions for p in purposes.values()) and not (
         extraction.llm_base_url.startswith("https://") and extraction.llm_model
     ):
-        raise SpecError("a purpose declares fields, so extraction.llm_base_url (https://) and "
+        raise SpecError("a purpose declares fields or actions, so extraction.llm_base_url "
+                        "(https://) and "
                         "extraction.llm_model are required — the model that reads finished calls",
                         field="communications.extraction", source=source)
     if public_url and not public_url.startswith("https://"):
@@ -559,6 +579,13 @@ def parse_communications(
     if cascade.llm_base_url and not cascade.llm_base_url.startswith("https://"):
         raise SpecError("must be an https:// URL", field="communications.cascade.llm_base_url",
                         source=source)
+    email_rule = actions.rule("follow_up_email")
+    if email_rule is not None and email_rule.tier != "never" and not email.provider:
+        raise SpecError("follow-up emails are configured, so communications.email (provider "
+                        "and from) is required", field="communications.email", source=source)
+    if email.provider and not public_url:
+        raise SpecError("is required to send email: every email carries an unsubscribe link "
+                        "to it", field="communications.public_url", source=source)
     if profiles and not disclosure:
         raise SpecError(
             "is required once any agent may call — the words spoken before the agent, "
@@ -581,6 +608,8 @@ def parse_communications(
         public_url=public_url,
         consent_prompt=consent_prompt,
         extraction=extraction,
+        actions=actions,
+        email=email,
     )
 
 
@@ -604,6 +633,12 @@ def load_communications(
 
 def check_agents_exist(spec: CommunicationsSpec, agent_ids: Sequence[str]) -> None:
     known = set(agent_ids)
+    for rule in spec.actions.rules.values():
+        if rule.assignee and rule.assignee not in known:
+            raise SpecError(
+                f"{rule.kind} work goes to {rule.assignee!r}, which this bundle does not define",
+                field=f"communications.actions.rules.{rule.kind}.assignee",
+            )
     for profile in spec.profiles:
         if profile.agent not in known:
             raise SpecError(

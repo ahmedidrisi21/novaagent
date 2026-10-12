@@ -13,7 +13,10 @@ The flow for each finished call with a transcript:
    reaches the field's ``auto_apply`` — unless a person entered the current value, which a
    call never overwrites. Everything else goes to the review queue, with the quote, so the
    reviewer sees exactly what was said.
-5. **The transcript goes**, unless the profile keeps it for a stated number of days.
+5. **Actions.** The same reading proposes what the call calls for — a callback, a task, a
+   follow-up email — from the kinds its purpose allows. :mod:`nova.communications.actions`
+   checks them and writes them with the extraction as the call's one plan.
+6. **The transcript goes**, unless the profile keeps it for a stated number of days.
 
 Every written value records the call and the quote it came from, so "where did this come
 from?" is answered by the record itself.
@@ -27,6 +30,8 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from nova.audit import new_correlation_id
+from nova.communications.actions import plan as propose
+from nova.communications.actions import schema_for
 from nova.communications.cascade import OPT_OUT, ChatResponder, Responder
 from nova.communications.contracts import ProviderError
 from nova.communications.spec import FieldSpec
@@ -199,21 +204,25 @@ def process_call(gateway, call_id: str, extractor: Optional[Responder]) -> Optio
     purpose = gateway.spec.purposes.get(record.purpose)
     profile = gateway.spec.profile(record.agent)
     fields = purpose.fields if purpose else ()
+    kinds = purpose.actions if purpose else ()
     now = _iso(gateway)
-    if fields and extractor is None:
+    if (fields or kinds) and extractor is None:
         return None  # wait for the model to be configured; the transcript stays until then
 
-    summary, values, error = "", [], ""
-    if fields:
+    summary, values, error, plan = "", [], "", []
+    if fields or kinds:
         text = transcript_text(turns)
         try:
             reply = extractor.reply([
-                {"role": "system", "content": f"{_SYSTEM}\n\n{_schema(fields)}"},
+                {"role": "system", "content": "\n\n".join(
+                    part for part in (_SYSTEM, _schema(fields) if fields else "",
+                                      schema_for(kinds)) if part)},
                 {"role": "user", "content": f"Transcript:\n{text}"},
             ])
             reading = _parse_reply(reply)
             summary = " ".join(str(reading.get("summary") or "").split())[:600]
             values = verify(fields, reading, text)
+            plan = propose(gateway, record, reading, text, summary)
         except (ProviderError, ValueError) as exc:
             error = str(exc)[:300]
 
@@ -221,7 +230,7 @@ def process_call(gateway, call_id: str, extractor: Optional[Responder]) -> Optio
     until = _iso(gateway, timedelta(days=keep)) if keep else ""
     if not gateway.store.save_extraction(call_id, model=gateway.spec.extraction.llm_model,
                                          fields=values, summary=summary, error=error, at=now,
-                                         transcript_until=until):
+                                         transcript_until=until, actions=plan):
         return None
     outcome = _write_back(gateway, record, fields, values, now) if values else {"applied": 0, "queued": 0}
     if not keep:
@@ -229,10 +238,11 @@ def process_call(gateway, call_id: str, extractor: Optional[Responder]) -> Optio
     gateway.audit.record(
         "communications.call.extracted", correlation_id=new_correlation_id(), subject=call_id,
         detail={"fields": [v["name"] for v in values], "opted_out": opted_out,
+                "actions": [a["kind"] for a in plan],
                 "transcript_kept_days": keep, **outcome},
         error=error,
     )
-    return {"fields": values, "summary": summary, "error": error, **outcome}
+    return {"fields": values, "summary": summary, "error": error, "actions": len(plan), **outcome}
 
 
 def run_pending(gateway, extractor: Optional[Responder], *, limit: int = 20) -> int:

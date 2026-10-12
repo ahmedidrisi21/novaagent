@@ -9,6 +9,8 @@ The CSV is what a CRM exports. Columns:
 ``groups``                 required; ``;``-separated, matched against agents' grants
 ``ai_voice_consent``       optional; **evidence** of AI-voice consent (form id, URL, call id)
 ``marketing_consent``      optional; evidence of prior express *written* marketing consent
+``name``                   optional; how a follow-up email greets them
+``email``                  optional; the only address a follow-up email is ever sent to
 =========================  ===============================================================
 
 A consent column holds evidence, never ``yes``: consent nobody can show is consent nobody
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -32,6 +35,7 @@ from nova.communications.store import CommsStore
 REQUIRED = ("contact_id", "phone", "timezone", "groups")
 CONSENT_COLUMNS = {"ai_voice_consent": CONSENT_AI_VOICE, "marketing_consent": CONSENT_MARKETING_WRITTEN}
 _BARE_YES = {"yes", "y", "true", "1", "x", "ok"}
+EMAIL = re.compile(r"^[^@\s<>,;]+@[^@\s<>,;]+\.[^@\s<>,;]+$")
 
 
 @dataclass
@@ -77,11 +81,15 @@ def import_contacts(text: str, *, store: CommsStore, audit: AuditLog, at: str,
             if values.get(column, "").lower() in _BARE_YES:
                 problems.append(f"{column} must be evidence (a form id, URL or call id), not "
                                 f"{values[column]!r}")
+        if values.get("email") and not EMAIL.match(values["email"]):
+            problems.append(f"email {values['email']!r} is not an address")
         if problems:
             report.errors.append(f"line {line}: {'; '.join(problems)}")
             continue
 
-        store.put_contact(Contact(values["contact_id"], values["phone"], values["timezone"], groups))
+        store.put_contact(Contact(values["contact_id"], values["phone"], values["timezone"], groups,
+                                  name=values.get("name", "")[:120],
+                                  email=values.get("email", "")))
         report.imported += 1
         for column, kind in CONSENT_COLUMNS.items():
             evidence = values.get(column, "")

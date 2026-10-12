@@ -5,13 +5,18 @@ must stay private; this one is reached by vendors over the internet and authenti
 every request by its signature instead. Putting both behind one listener would put the
 operator surface on the internet.
 
-Five routes, POST only, bodies capped at 64 KiB:
+Seven routes, POST, bodies capped at 64 KiB:
 
-    /calls/<carrier>/answer     the carrier asks what to do with an answered call
-    /calls/<carrier>/consent    the person's answer to "may we record?"
-    /calls/<carrier>/recording  a recording started, finished, or captured nothing
-    /calls/<carrier>/status     call progress
-    /voice/<engine>/events    a voice engine announces a bridged session
+    /calls/<carrier>/answer        the carrier asks what to do with an answered call
+    /calls/<carrier>/consent       the person's answer to "may we record?"
+    /calls/<carrier>/recording     a recording started, finished, or captured nothing
+    /calls/<carrier>/status        call progress
+    /voice/<engine>/events         a voice engine announces a bridged session
+    /email/<provider>/events       delivery, bounce and complaint webhooks
+    /email/<provider>/unsubscribe  the link in every email (one-click POST)
+
+The unsubscribe link alone also answers GET, with a page asking to confirm: a person
+clicks it in a browser, and a mail scanner fetching it must not unsubscribe anyone.
 
 ``public_url`` is the URL vendors are configured with. Signatures cover the exact URL the
 vendor called, and behind a TLS-terminating proxy the request line alone does not say what
@@ -58,6 +63,22 @@ def _voice(gateway, name, headers, body, url):
     return _plain(gateway.voice_event(name, headers=headers, body=body))
 
 
+def _email_events(gateway, name, headers, body, url):
+    from nova.communications.followup_email import ingest
+
+    status, outcome = ingest(gateway, name, headers, body)
+    return status, "text/plain", outcome.encode("utf-8")
+
+
+def _unsubscribe(method: str):
+    def handler(gateway, name, headers, body, url):
+        from nova.communications.followup_email import unsubscribe
+
+        return unsubscribe(gateway, name, url, method=method)
+
+    return handler
+
+
 #: ``/<area>/<provider>/<what>`` -> handler. Every route is enumerated here; nothing is
 #: matched by prefix.
 ROUTES = {
@@ -66,15 +87,22 @@ ROUTES = {
     ("calls", "recording"): _recording,
     ("calls", "status"): _status,
     ("voice", "events"): _voice,
+    ("email", "events"): _email_events,
+    ("email", "unsubscribe"): _unsubscribe("POST"),
+}
+GET_ROUTES = {
+    ("email", "unsubscribe"): _unsubscribe("GET"),
 }
 
 
 def handle(
-    gateway: CallGateway, public_url: str, path: str, headers: dict[str, str], body: bytes
+    gateway: CallGateway, public_url: str, path: str, headers: dict[str, str], body: bytes,
+    *, method: str = "POST",
 ) -> tuple[int, str, bytes]:
     """Route one request. Pure enough to test without a socket: ``(status, type, body)``."""
     route = path.split("?", 1)[0].strip("/").split("/")
-    handler = ROUTES.get((route[0], route[2])) if len(route) == 3 else None
+    table = GET_ROUTES if method == "GET" else ROUTES
+    handler = table.get((route[0], route[2])) if len(route) == 3 else None
     if handler is None:
         return 404, "text/plain", b"no such route"
     return handler(gateway, route[1], headers, body, public_url.rstrip("/") + path)
@@ -116,7 +144,9 @@ def build_server(
                 self._reply(*handle(gateway, public_url, self.path, dict(self.headers), body))
 
         def do_GET(self) -> None:  # noqa: N802
-            self._reply(405, "text/plain", b"POST only")
+            with lock:
+                self._reply(*handle(gateway, public_url, self.path, dict(self.headers), b"",
+                                    method="GET"))
 
         def log_message(self, format: str, *args: object) -> None:
             # Query strings carry call ids; the gateway's audit log is the record.

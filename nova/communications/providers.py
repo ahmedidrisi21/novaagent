@@ -23,6 +23,7 @@ from nova.channels.providers import Capability, Verification
 class Kind(str, Enum):
     VOICE = "voice"
     TELEPHONY = "telephony"
+    EMAIL = "email"
 
 
 #: The questions asked of every voice engine. A routing decision may only rely on a
@@ -53,6 +54,21 @@ TELEPHONY_CAPABILITIES: tuple[str, ...] = (
     "signed_webhooks",
 )
 
+#: The questions asked of every email provider.
+EMAIL_CAPABILITIES: tuple[str, ...] = (
+    # A send retried with the same key sends once.
+    "idempotent_send",
+    "delivery_events",
+    "bounce_events",
+    "signed_webhooks",
+)
+
+CAPABILITY_NAMES: Mapping[Kind, tuple[str, ...]] = {
+    Kind.VOICE: VOICE_CAPABILITIES,
+    Kind.TELEPHONY: TELEPHONY_CAPABILITIES,
+    Kind.EMAIL: EMAIL_CAPABILITIES,
+}
+
 
 @dataclass(frozen=True)
 class CommsProvider:
@@ -75,7 +91,7 @@ class CommsProvider:
         return self.capabilities.get(name, Capability(supported=None))
 
     def to_dict(self) -> dict:
-        names = VOICE_CAPABILITIES if self.kind is Kind.VOICE else TELEPHONY_CAPABILITIES
+        names = CAPABILITY_NAMES[self.kind]
         return {
             "id": self.id,
             "kind": self.kind.value,
@@ -208,6 +224,21 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "signed_webhooks": _vendor(True),
         },
     ),
+    # -- email -----------------------------------------------------------------------------
+    CommsProvider(
+        id="resend",
+        kind=Kind.EMAIL,
+        label="Resend",
+        capabilities={
+            "idempotent_send": _tested(True),
+            "delivery_events": _tested(True),
+            "bounce_events": _tested(True),
+            "signed_webhooks": _tested(True),
+        },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/resend.py",
+        caveat="Exercised against a scripted stand-in only; no live email has been sent.",
+    ),
     # -- test doubles --------------------------------------------------------------------
     CommsProvider(
         id="mock-voice",
@@ -237,6 +268,15 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "recording": _tested(False),
             "signed_webhooks": _tested(True),
         },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/mock.py",
+        test_only=True,
+    ),
+    CommsProvider(
+        id="mock-email",
+        kind=Kind.EMAIL,
+        label="Test email provider (sends nothing)",
+        capabilities={name: _tested(True) for name in EMAIL_CAPABILITIES},
         verification=Verification.LOCAL_VALIDATED,
         implementation="nova/communications/mock.py",
         test_only=True,

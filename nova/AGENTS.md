@@ -81,7 +81,10 @@ to extend it.
 dial per request, approval bound to the exact call, plus the Twilio, GPT-Live and cascaded
 Deepgram + Cartesia adapters, read-only knowledge lookups mid-call, recording with carrier-asked consent and a payment
 guard, extraction into verified contact data with a review queue, the agents' signed
-calling tool (`runtime/hermes/calling_tool.py`, copied verbatim like the knowledge tool), and the internet-facing webhook listener and media bridge (never the Control API). Read
+calling tool (`runtime/hermes/calling_tool.py`, copied verbatim like the knowledge tool),
+post-call action plans with auto/approve/never tiers (`actions.py`; tiers are the tenant's,
+never the model's) and follow-up email through Resend (`followup_email.py`, `resend.py`),
+and the internet-facing webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.
 

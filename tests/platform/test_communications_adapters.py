@@ -31,7 +31,8 @@ from nova.communications.contracts import (
     VoiceSessionRequest,
 )
 from nova.communications.mock import MockTelephony
-from nova.communications.openai_live import OpenAILiveVoice, sign
+from nova.communications.openai_live import OpenAILiveVoice
+from nova.communications.signing import sign
 from nova.communications.twilio import TwilioTelephony, signature
 from nova.communications.webhooks import build_server, handle
 
