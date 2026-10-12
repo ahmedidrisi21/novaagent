@@ -109,6 +109,17 @@ def register(sub) -> None:
     decide_actions.add_argument("--reject", nargs="*", default=[], metavar="ACTION_ID")
     decide_actions.add_argument("--actor", default="")
 
+    history = command("history", "one timeline of calls, emails, actions and delegations")
+    for flag in ("contact", "agent", "channel", "status", "task", "since", "until"):
+        history.add_argument(f"--{flag}", default="")
+    history.add_argument("--limit", type=int, default=50)
+    history.add_argument("--json", action="store_true")
+
+    delegations = command("delegations", "work agents handed to each other")
+    delegations.add_argument("--status", default="")
+    delegations.add_argument("--agent", default="")
+    delegations.add_argument("--json", action="store_true")
+
     contacts = command("import-contacts", "import contacts and consent from a CRM CSV export")
     contacts.add_argument("csv", type=Path)
 
@@ -357,6 +368,42 @@ def _decide_actions(args, bundle, gateway, public_url) -> int:
     return 0
 
 
+def _history(args, bundle, gateway, public_url) -> int:
+    from nova.communications.history import timeline
+
+    rows = timeline(gateway.store, contact_id=args.contact, agent=args.agent,
+                    channel=args.channel, status=args.status, task_id=args.task,
+                    since=args.since, until=args.until, limit=args.limit)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for row in rows:
+        approved = f"  approved by {row['approved_by']}" if row["approved_by"] else ""
+        print(f"  {row['at'][:19]}  {row['channel']:10} {row['status']:18} {row['agent']:18} "
+              f"{row['what']}{approved}")
+        if row["reason"]:
+            print(f"      {row['reason']}")
+    if not rows:
+        print("nothing matches")
+    return 0
+
+
+def _delegations(args, bundle, gateway, public_url) -> int:
+    rows = gateway.store.delegations(status=args.status, agent=args.agent)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for row in rows:
+        print(f"  {row['delegation_id']}  {row['status']:14} {row['from_agent']} -> "
+              f"{row['to_agent']}  (depth {row['depth']}, due {row['deadline'][:16]})")
+        print(f"      {row['objective'][:120]}")
+        if row["reason"]:
+            print(f"      {row['reason']}")
+    if not rows:
+        print("no delegations")
+    return 0
+
+
 def _contact(args, bundle, gateway, public_url) -> int:
     values = gateway.store.attributes(args.contact_id)
     if args.json:
@@ -454,4 +501,6 @@ _COMMANDS = {
     "set-attribute": _set_attribute,
     "actions": _actions,
     "decide-actions": _decide_actions,
+    "history": _history,
+    "delegations": _delegations,
 }

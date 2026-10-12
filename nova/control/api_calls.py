@@ -265,3 +265,41 @@ def decide_review(api, tail: str, principal, payload: Mapping[str, Any]):
         return error(409, str(exc), review_id=review_id)
     finally:
         gateway.store.close()
+
+
+_HISTORY_FILTERS = {"contact": "contact_id", "agent": "agent", "channel": "channel",
+                    "status": "status", "task": "task_id", "since": "since", "until": "until"}
+
+
+def history(api, query: Mapping[str, str]):
+    """One timeline, metadata only: transcripts, email text and recordings stay behind the
+    per-call and per-email routes."""
+    from nova.communications.history import timeline
+    from nova.communications.store import CommsStore
+    from nova.control.api import Response
+    from nova.control.api import _error as error
+
+    filters = {name: str(query.get(key) or "") for key, name in _HISTORY_FILTERS.items()}
+    try:
+        limit = int(query.get("limit") or 200)
+    except ValueError:
+        return error(400, "limit must be a whole number")
+    store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
+    try:
+        return Response(200, {"events": timeline(store, limit=limit, **filters)})
+    except ValueError as exc:
+        return error(400, str(exc))
+    finally:
+        store.close()
+
+
+def list_delegations(api, query: Mapping[str, str]):
+    from nova.communications.store import CommsStore
+    from nova.control.api import Response
+
+    store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
+    try:
+        return Response(200, {"delegations": store.delegations(
+            status=str(query.get("status") or ""), agent=str(query.get("agent") or ""))})
+    finally:
+        store.close()

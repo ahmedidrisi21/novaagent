@@ -134,6 +134,7 @@ def _draft(gateway, record, rule: ActionRule, item: Mapping, summary: str) -> _R
 
 
 _RESOLVE: Mapping[str, Callable[..., _Resolved]] = {
+    "handoff": _work,
     "escalate": _work,
     "task": _work,
     "flag": _work,
@@ -265,6 +266,30 @@ def _run_work(gateway, action: dict) -> Outcome:
     return Outcome("done", result=task_id)
 
 
+def _run_handoff(gateway, action: dict) -> Outcome:
+    """A qualified lead, or anything else a call says another agent should take forward,
+    handed over by delegation: the same routes, depth, cycle and budget checks as an
+    agent's own ``delegate_work``."""
+    from nova.communications.delegation import delegate
+
+    record = gateway.store.call(action["call_id"])
+    params = action["params"]
+    answer = delegate(
+        gateway, delegation_id=f"action-{action['action_id']}", sender=record.agent,
+        receiver=params["assignee"],
+        objective=f"Take forward contact {action['contact_id']}: "
+                  f"{params.get('detail') or 'see the call summary'}",
+        expected=[], contact_id=action["contact_id"],
+        context=" ".join(part for part in (
+            f"From call {action['call_id']}.",
+            f"What was said: \"{action['quote']}\"" if action["quote"] else "",
+            f"Call summary: {params.get('summary')}" if params.get("summary") else "") if part),
+        parent_task_id=record.task_id, call_id=action["call_id"])
+    if answer["status"] == "refused":
+        return Outcome("failed", result=answer["delegation_id"], error=answer["reason"])
+    return Outcome("done", result=answer["delegation_id"])
+
+
 def _run_callback(gateway, action: dict) -> Outcome:
     limits = gateway.spec.actions
     if not action["decided_by"]:
@@ -294,6 +319,7 @@ def _run_email(gateway, action: dict) -> Outcome:
 
 
 EXECUTORS: Mapping[str, Callable[..., Outcome]] = {
+    "handoff": _run_handoff,
     "escalate": _run_work,
     "task": _run_work,
     "flag": _run_work,

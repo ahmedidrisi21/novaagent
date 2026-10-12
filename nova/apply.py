@@ -303,9 +303,14 @@ def _orphans(bundle: TenantBundle, runtime: AgentRuntime) -> list[str]:
 
 def _calling_grant(bundle, runtime, agent_id: str, *, dry_run: bool):
     """The agent's calling grant, or None. A dry run never creates the deployment's key."""
-    from nova.communications.inbox import MASTER_KEY_NAME, calling_grant, master_key
+    from nova.communications.inbox import (
+        MASTER_KEY_NAME,
+        calling_grant,
+        calling_identity,
+        master_key,
+    )
 
-    if bundle.communications.profile(agent_id) is None:
+    if calling_identity(bundle.communications, agent_id) is None:
         return None
     key_file = runtime.state_location / "nova" / MASTER_KEY_NAME
     master = b"" if dry_run and not key_file.is_file() else master_key(runtime.state_location)

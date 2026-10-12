@@ -53,6 +53,8 @@ KINDS: Mapping[str, ActionKind] = {k.name: k for k in (
                "approve"),
     ActionKind("flag", "the agent promised something it may not be allowed to promise",
                "auto", needs_assignee=True),
+    ActionKind("handoff", "the caller is ready for another agent to take forward (for "
+               "example a qualified lead for sales)", "auto", needs_assignee=True),
     ActionKind("commercial_change",
                "the caller asked for a discount, refund, contract or payment change",
                "never", tiers=("never",)),

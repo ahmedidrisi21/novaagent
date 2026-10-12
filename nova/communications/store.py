@@ -31,6 +31,7 @@ from nova.communications.contracts import (
 )
 from nova.communications.gate import Contact
 from nova.communications.store_actions import ACTIONS_SCHEMA, ActionsStoreMixin
+from nova.communications.store_delegations import DELEGATIONS_SCHEMA, DelegationsStoreMixin
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS contacts (
@@ -222,7 +223,7 @@ def _call(row: Optional[tuple]) -> Optional[CallRecord]:
     return CallRecord(*values)
 
 
-class CommsStore(ActionsStoreMixin):
+class CommsStore(ActionsStoreMixin, DelegationsStoreMixin):
     def __init__(self, path: Path | str, *, tenant_id: str) -> None:
         self.path = Path(path)
         self.tenant_id = tenant_id
@@ -234,6 +235,7 @@ class CommsStore(ActionsStoreMixin):
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
         self._db.executescript(ACTIONS_SCHEMA)
+        self._db.executescript(DELEGATIONS_SCHEMA)
         self._migrate()
 
     def _migrate(self) -> None:
@@ -468,14 +470,16 @@ class CommsStore(ActionsStoreMixin):
         return [_call(row) for row in rows]
 
     def recent_calls(
-        self, *, limit: int = 50, agent: str = "", status: str = ""
+        self, *, limit: int = 50, agent: str = "", status: str = "", contact_id: str = "",
+        task_id: str = "",
     ) -> list[CallRecord]:
-        """Newest first, for the call monitor."""
+        """Newest first, for the call monitor and the history."""
         sql = f"SELECT {_CALL_COLUMNS} FROM calls WHERE tenant_id = ?"
         args: list = [self.tenant_id]
-        if agent:
-            sql += " AND agent = ?"
-            args.append(agent)
+        for column, value in (("agent", agent), ("contact_id", contact_id), ("task_id", task_id)):
+            if value:
+                sql += f" AND {column} = ?"
+                args.append(value)
         if status:
             sql += " AND status = ?"
             args.append(CallStatus(status).value)

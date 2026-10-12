@@ -84,6 +84,8 @@ guard, extraction into verified contact data with a review queue, the agents' si
 calling tool (`runtime/hermes/calling_tool.py`, copied verbatim like the knowledge tool),
 post-call action plans with auto/approve/never tiers (`actions.py`; tiers are the tenant's,
 never the model's) and follow-up email through Resend (`followup_email.py`, `resend.py`),
+agent-to-agent delegation along declared routes with depth, cycle, budget and deadline
+checks (`delegation.py`), one metadata-only history across all of it (`history.py`),
 and the internet-facing webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.
