@@ -15,6 +15,7 @@ Eight routes, POST, bodies capped at 64 KiB:
     /voice/<engine>/events         a voice engine announces a bridged session
     /email/<provider>/events       delivery, bounce and complaint webhooks
     /email/<provider>/unsubscribe  the link in every email (one-click POST)
+    /calendar/<provider>/events    booking, cancel and reschedule webhooks
 
 The unsubscribe link alone also answers GET, with a page asking to confirm: a person
 clicks it in a browser, and a mail scanner fetching it must not unsubscribe anyone.
@@ -101,6 +102,13 @@ def _email_events(gateway, name, headers, body, url):
     return status, "text/plain", outcome.encode("utf-8")
 
 
+def _calendar_events(gateway, name, headers, body, url):
+    from nova.communications.meetings import ingest
+
+    status, outcome = ingest(gateway, name, headers, body)
+    return status, "text/plain", outcome.encode("utf-8")
+
+
 def _unsubscribe(method: str):
     def handler(gateway, name, headers, body, url):
         from nova.communications.followup_email import unsubscribe
@@ -128,6 +136,7 @@ ROUTES = {
     ("voice", "events"): _voice,
     ("email", "events"): _email_events,
     ("email", "unsubscribe"): _unsubscribe("POST"),
+    ("calendar", "events"): _calendar_events,
 }
 GET_ROUTES = {
     ("email", "unsubscribe"): _unsubscribe("GET"),

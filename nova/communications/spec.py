@@ -29,6 +29,7 @@ from nova.communications.spec_budget import BudgetSpec, parse_budget
 from nova.communications.spec_delegation import DelegationSpec, parse_delegation
 from nova.communications.spec_insights import InsightsSpec, parse_insights
 from nova.communications.spec_vendors import VendorSpec, parse_vendors
+from nova.communications.spec_meetings import MeetingsSpec, parse_meetings
 from nova.communications.spec_actions import (
     ActionsSpec,
     EmailSpec,
@@ -289,6 +290,7 @@ class CommunicationsSpec:
     budget: BudgetSpec = field(default_factory=BudgetSpec)
     vendors: VendorSpec = field(default_factory=VendorSpec)
     insights: InsightsSpec = field(default_factory=InsightsSpec)
+    meetings: MeetingsSpec = field(default_factory=MeetingsSpec)
 
     @property
     def declared(self) -> bool:
@@ -318,6 +320,7 @@ class CommunicationsSpec:
             "budget": self.budget.to_dict(),
             **self.vendors.to_dict(),
             "insights": self.insights.to_dict(),
+            "meetings": self.meetings.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -514,6 +517,7 @@ def parse_communications(
     email = parse_email(doc.child("email"), allow_test=allow_test)
     delegation = parse_delegation(doc.child("delegation"))
     insights = parse_insights(doc.child("insights"), email_provider=email.provider)
+    meetings = parse_meetings(doc.child("meetings"), allow_test=allow_test)
     vendors = parse_vendors(doc.child("telnyx"), doc.child("elevenlabs"), telephony=telephony,
                             voice=voice, source=source)
     budget = parse_budget(doc.child("budget"), providers={
@@ -558,6 +562,18 @@ def parse_communications(
             if purpose not in purposes:
                 raise SpecError(f"{purpose!r} is not a declared purpose",
                                 field=f"communications.email.agents[{index}].purposes",
+                                source=source)
+    for index, grant in enumerate(meetings.agents):
+        for purpose in grant.purposes:
+            if purpose not in purposes:
+                raise SpecError(f"{purpose!r} is not a declared purpose",
+                                field=f"communications.meetings.agents[{index}].purposes",
+                                source=source)
+    for index, event_type in enumerate(meetings.event_types):
+        for purpose in event_type.purposes:
+            if purpose not in purposes:
+                raise SpecError(f"{purpose!r} is not a declared purpose",
+                                field=f"communications.meetings.event_types[{index}].purposes",
                                 source=source)
     so_far = {
         "voice_providers": voice,
@@ -633,6 +649,9 @@ def parse_communications(
                     f"{profile.agent!r} may propose handoffs to {handoff.assignee!r}, so "
                     "communications.delegation needs a route between them",
                     field="communications.delegation.routes", source=source)
+    if meetings.provider and not public_url:
+        raise SpecError("is required to book meetings: the calendar provider reports changes "
+                        "to a webhook there", field="communications.public_url", source=source)
     if email.provider and not public_url:
         raise SpecError("is required to send email: every email carries an unsubscribe link "
                         "to it", field="communications.public_url", source=source)
@@ -664,6 +683,7 @@ def parse_communications(
         budget=budget,
         vendors=vendors,
         insights=insights,
+        meetings=meetings,
     )
 
 
@@ -691,6 +711,10 @@ def check_agents_exist(spec: CommunicationsSpec, agent_ids: Sequence[str]) -> No
         if grant.agent not in known:
             raise SpecError(f"email grant for {grant.agent!r}, which this bundle does not define",
                             field="communications.email.agents")
+    for grant in spec.meetings.agents:
+        if grant.agent not in known:
+            raise SpecError(f"meeting grant for {grant.agent!r}, which this bundle does not define",
+                            field="communications.meetings.agents")
     if spec.insights.assignee and spec.insights.assignee not in known:
         raise SpecError(f"the weekly digest goes to {spec.insights.assignee!r}, which this bundle "
                         "does not define", field="communications.insights.assignee")

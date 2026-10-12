@@ -843,17 +843,89 @@ For each received message:
 
 The history shows agent emails and, filtered by contact, the replies (metadata only).
 
+## Phase 8: agents book meetings
+
+```yaml
+communications:
+  public_url: https://calls.acme.example   # the calendar reports changes to a webhook here
+  meetings:
+    provider: calcom                       # or mock-calendar with allow_test_providers
+    horizon_days: 30                       # how far ahead a meeting may be booked
+    min_notice_hours: 2                    # and how soon
+    event_types:
+      - id: intro
+        title: Intro call
+        provider_ref: "123"                # the event type's id at Cal.com
+        duration_minutes: 30
+        purposes: [sales]                  # purposes this meeting may be booked for
+    agents:
+      - agent: sales
+        purposes: [sales]
+        contact_groups: [leads]
+        event_types: [intro]
+        approval: always                   # always | first_contact | never (default always)
+        max_per_day: 10
+```
+
+Credentials are the gateway's own: `CALCOM_API_KEY` and `CALCOM_WEBHOOK_SECRET`. Point a Cal.com
+webhook (booking created, cancelled, rescheduled, rejected) at `<public_url>/calendar/calcom/events`.
+
+An agent with a meeting grant gets `book_meeting`, `meeting_slots` and `meeting_status` in its signed
+tool (toolset `nova_meetings`). It names a contact by CRM id, a purpose, an event type and a time; it
+never supplies an address, and the invitation goes to the one on file. A time with no offset is read
+in the contact's own zone. `meeting_slots` asks which times are open on a day and the answer is read
+with `meeting_status`. The gateway decides each request (`meetings.py`); the first check that fails
+decides:
+
+1. the agent's meeting grant, then the purpose;
+2. the event type, that it is in the grant, and that it is for this purpose;
+3. the contact, then its group;
+4. an address on file;
+5. opt-outs: every channel, then email (the invitation is an email);
+6. `email_marketing` consent for a marketing purpose;
+7. notice and horizon: not sooner than `min_notice_hours`, not later than `horizon_days`;
+8. the agent's daily cap;
+9. the grant's approval mode.
+
+- **Approval is bound to the meeting.** A person approves a digest of address, event type, time and
+  length (`nova calls meetings`, `nova calls decide-meeting ID approve|reject|cancel`,
+  `GET /communications/meetings`, `POST /communications/meetings/<id>/decide`, admin). Approving
+  re-runs the gate: an address that changed, consent withdrawn, or a time that has become too close
+  blocks it rather than books it.
+- **Booked once, without an idempotency key.** Cal.com documents none. A request is claimed for
+  booking by one conditional update, and **every booking is preceded by a search for one already
+  made** for this request (a `nova_request_id` metadata tag the adapter writes). A provider that
+  does not answer leaves the request `sending`; if the search itself fails it is not booked again.
+  The sweep settles these after ten minutes, finding before booking, and fails what was never
+  confirmed after a day.
+- **A taken time is a definite answer.** The request fails and says which times are open nearby, for
+  the agent to try. It is not retried.
+- **The contact's own changes arrive as signed webhooks**, applied once per delivery (the signature
+  carries no timestamp, so a delivery is recognised by a hash of its body). A cancel or reschedule
+  becomes work for the agent that booked it.
+- **Opting out cancels.** A contact who opts out (every channel, or email) has their upcoming
+  meetings cancelled at the provider by the sweep, and tried again if the provider is down.
+
+Cal.com is `LOCAL_VALIDATED`: tested against a scripted stand-in only. Not verified against a live
+account: the signature encoding (read as a hex HMAC-SHA256 of the body), the error for a taken slot
+(any 400, 409 or 422 is read as one), and whether an open time is an object or a bare string (both
+are read).
+
+Not built: a post-call action that books from what a caller agreed on the phone (the same gate would
+carry it), rescheduling by an agent, recurring meetings, and reminders (Cal.com sends its own).
+
 ## Not built yet, in the order it lands
 
-1. **Next:** a first live call on a test number, a first live email, and a first live
-   reply through a Resend receiving domain.
+1. **Next:** a first live call on a test number, a first live email, a first live
+   reply through a Resend receiving domain, and a first live booking at Cal.com.
 2. **Legal sign-off of the consent rule per launch market**, then switching recording on
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
 3. **Amazon Nova Sonic.** Bedrock's bidirectional stream needs an HTTP/2 event-stream
    client that boto3 does not provide, which is a dependency decision. Also a live
    benchmark of engine latency.
-4. **Later:** meeting booking, and ringless voicemail (with its own legal review).
+4. **Later:** a post-call action that books a meeting, and ringless voicemail (with its own
+   legal review).
 
 A dashboard screen for the call monitor and the action plans needs the dashboard's source,
 which is not here.
