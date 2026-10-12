@@ -13,6 +13,7 @@ the change probably belongs in `nova/`.
 |---|---|---|---|---|---|
 | 1 | `AGENTS.md` | One row added to the routing table, pointing `nova/`, `deploy/` and `docs/platform/` at `nova/AGENTS.md` | Without it the boundary rules are invisible to future contributors and AI assistants, who are instructed to read the routing table before editing an area | None — this *is* the repo's mechanism for area guidance; it simply has to be registered | **Low.** A single row appended to a stable table |
 | 2 | `pyproject.toml` | `pyyaml==6.0.3` kept as a direct dependency | Upstream unified YAML on ruamel and dropped PyYAML; `nova/` is stdlib + PyYAML by rule and imports it in 13 modules | None — a dependency, not a seam. Porting `nova/` to ruamel is the alternative | **Low.** One line; re-check at each upstream merge that the pin still matches the lockfile |
+| 3 | `.github/blob-size-allowlist.txt` | Three upstream files allowed, temporarily | The sync merge adds them in one PR and the large-file check judges them as new; upstream added them over many small PRs | None — a one-time effect of syncing ~17,000 commits | **None.** Remove the lines after the sync merges; an unchanged file needs no entry |
 
 ## Not counted here
 
