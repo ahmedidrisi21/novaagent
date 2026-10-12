@@ -286,11 +286,24 @@ def history(api, query: Mapping[str, str]):
         return error(400, "limit must be a whole number")
     store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
     try:
-        return Response(200, {"events": timeline(store, limit=limit, **filters)})
+        return Response(200, {"events": timeline(store, limit=limit, spec=api.bundle.communications,
+                                                 **filters)})
     except ValueError as exc:
         return error(400, str(exc))
     finally:
         store.close()
+
+
+def usage(api, query: Mapping[str, str]):
+    """This month's minutes, emails and cost against the budget. No contact appears in it."""
+    from nova.communications.usage import month_to_date
+    from nova.control.api import Response
+
+    gateway = _gateway(api, "control-api")
+    try:
+        return Response(200, month_to_date(gateway))
+    finally:
+        gateway.store.close()
 
 
 def list_delegations(api, query: Mapping[str, str]):

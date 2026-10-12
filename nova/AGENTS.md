@@ -86,6 +86,8 @@ post-call action plans with auto/approve/never tiers (`actions.py`; tiers are th
 never the model's) and follow-up email through Resend (`followup_email.py`, `resend.py`),
 agent-to-agent delegation along declared routes with depth, cycle, budget and deadline
 checks (`delegation.py`), one metadata-only history across all of it (`history.py`),
+usage, cost and a hard monthly budget that counts calls on the line (`usage.py`), and
+mid-call engine failover through the carrier (`CallGateway.engine_failed`),
 and the internet-facing webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.

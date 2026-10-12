@@ -312,6 +312,11 @@ def _run_email(gateway, action: dict) -> Outcome:
 
     if gateway.email is None:
         return Outcome("release")
+    from nova.communications.usage import exhausted
+
+    over = exhausted(gateway)
+    if over:
+        return Outcome("hold", error=over)
     if not action["decided_by"] and _over_limit(
             gateway, action, gateway.spec.email.max_auto_per_contact_per_day):
         return Outcome("hold", error="already emailed this contact automatically today")

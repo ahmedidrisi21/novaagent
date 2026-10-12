@@ -115,6 +115,9 @@ def register(sub) -> None:
     history.add_argument("--limit", type=int, default=50)
     history.add_argument("--json", action="store_true")
 
+    usage = command("usage", "this month's minutes, emails and cost, against the budget")
+    usage.add_argument("--json", action="store_true")
+
     delegations = command("delegations", "work agents handed to each other")
     delegations.add_argument("--status", default="")
     delegations.add_argument("--agent", default="")
@@ -373,7 +376,7 @@ def _history(args, bundle, gateway, public_url) -> int:
 
     rows = timeline(gateway.store, contact_id=args.contact, agent=args.agent,
                     channel=args.channel, status=args.status, task_id=args.task,
-                    since=args.since, until=args.until, limit=args.limit)
+                    since=args.since, until=args.until, limit=args.limit, spec=bundle.communications)
     if args.json:
         print(json.dumps(rows, indent=2))
         return 0
@@ -385,6 +388,25 @@ def _history(args, bundle, gateway, public_url) -> int:
             print(f"      {row['reason']}")
     if not rows:
         print("nothing matches")
+    return 0
+
+
+def _usage(args, bundle, gateway, public_url) -> int:
+    from nova.communications.usage import month_to_date
+
+    usage = month_to_date(gateway)
+    if args.json:
+        print(json.dumps(usage, indent=2))
+        return 0
+    limit = f" of {usage['limit']:.2f} ({usage['percent']}%)" if usage["limit"] else " (no limit set)"
+    print(f"{usage['month']}: {usage['spend']:.2f} {usage['currency']} spent, "
+          f"{usage['committed']:.2f} committed{limit}")
+    print(f"  {usage['calls']} call(s), {usage['minutes']} minute(s), {usage['emails']} email(s); "
+          f"carrier-billed so far {usage['billed']:.2f}")
+    for agent, row in sorted(usage["by_agent"].items()):
+        print(f"  {agent:24} {row['calls']:4} calls {row['minutes']:6} min {row['spend']:10.2f}")
+    if usage["unpriced"]:
+        print(f"  no rate set for: {', '.join(usage['unpriced'])} (left out of the estimate)")
     return 0
 
 
@@ -503,4 +525,5 @@ _COMMANDS = {
     "decide-actions": _decide_actions,
     "history": _history,
     "delegations": _delegations,
+    "usage": _usage,
 }

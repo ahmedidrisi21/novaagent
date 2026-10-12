@@ -24,6 +24,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 from nova.communications.contracts import (
     AnswerPlan,
+    Billing,
     CallStatus,
     ConsentReply,
     FailureReason,
@@ -185,7 +186,28 @@ class TwilioTelephony(TelephonyProvider):
         if not (200 <= status < 300 or status in (400, 404)):
             raise ProviderError(f"Twilio could not end the call ({status}): {data.get('message', '')}")
 
-    def fetch_status(self, provider_call_ref: str) -> Optional[ProviderEvent]:
+    def redirect(self, provider_call_ref: str, plan: AnswerPlan) -> None:
+        """Replace a live call's instructions: Twilio leaves the current verb and runs these."""
+        _, twiml = self.render_answer(plan)
+        status, data = self._post(f"Calls/{provider_call_ref}.json",
+                                  [("Twiml", twiml.decode("utf-8"))])
+        if not 200 <= status < 300:
+            raise ProviderError(f"Twilio could not redirect the call ({status}): "
+                                f"{data.get('message', '')}")
+
+    def fetch_billing(self, provider_call_ref: str) -> Optional[Billing]:
+        """The Call resource's ``price``, which Twilio fills in some time after the call ends."""
+        data = self._call_resource(provider_call_ref)
+        if data is None or data.get("price") in (None, ""):
+            return None
+        try:
+            return Billing(duration_seconds=int(data.get("duration") or 0),
+                           price=abs(float(data["price"])),
+                           currency=str(data.get("price_unit") or "USD"))
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(f"unreadable call price: {exc}") from exc
+
+    def _call_resource(self, provider_call_ref: str) -> Optional[dict]:
         auth = base64.b64encode(f"{self._sid}:{self._token}".encode()).decode("ascii")
         try:
             status, body = self._transport(
@@ -200,9 +222,17 @@ class TwilioTelephony(TelephonyProvider):
             raise ProviderError(f"Twilio could not report the call ({status})")
         try:
             data = json.loads(body.decode("utf-8"))
-            raw = str(data["status"])
-        except (ValueError, KeyError, TypeError) as exc:
+        except ValueError as exc:
             raise ProviderError(f"unreadable call resource: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ProviderError("unreadable call resource")
+        return data
+
+    def fetch_status(self, provider_call_ref: str) -> Optional[ProviderEvent]:
+        data = self._call_resource(provider_call_ref)
+        if data is None:
+            return None
+        raw = str(data.get("status") or "")
         if raw not in _STATUS:
             raise ProviderError(f"unknown Twilio call status {raw!r}")
         mapped, failure = _STATUS[raw]
@@ -296,6 +326,9 @@ class TwilioTelephony(TelephonyProvider):
         event_id = f"{call_sid}:{sequence}" if sequence is not None else f"{call_sid}:answer"
 
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+        detail = {"answered_by": answered_by} if answered_by else {}
+        if (form.get("CallDuration") or "").isdigit():
+            detail["duration_seconds"] = int(form["CallDuration"])
         return ProviderEvent(
             provider=self.id,
             provider_event_id=event_id,
@@ -304,7 +337,7 @@ class TwilioTelephony(TelephonyProvider):
             occurred_at=form.get("Timestamp", ""),
             failure=failure,
             call_id_hint=(query.get("call") or [""])[0],
-            detail={"answered_by": answered_by} if answered_by else {},
+            detail=detail,
         )
 
     def render_answer(self, plan: AnswerPlan) -> tuple[str, bytes]:

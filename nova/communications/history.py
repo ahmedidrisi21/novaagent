@@ -59,8 +59,9 @@ def _delegation_row(record: Mapping[str, Any]) -> dict:
 
 def timeline(store, *, contact_id: str = "", agent: str = "", channel: str = "",
              status: str = "", task_id: str = "", since: str = "", until: str = "",
-             limit: int = 200) -> list[dict]:
-    """Newest first. Every filter narrows; none is required."""
+             limit: int = 200, spec=None) -> list[dict]:
+    """Newest first. Every filter narrows; none is required. With the tenant's ``spec``,
+    each finished call carries its cost: estimated, and best known once billed."""
     if channel and channel not in CHANNELS:
         raise ValueError(f"channel must be one of {', '.join(CHANNELS)}")
     limit = max(1, min(int(limit), 1000))
@@ -71,6 +72,11 @@ def timeline(store, *, contact_id: str = "", agent: str = "", channel: str = "",
         return by_id.get(call_id) or store.call(call_id)
 
     rows: list[dict] = [_call_row(record) for record in calls]
+    if spec is not None:
+        from nova.communications.usage import finished_cost
+
+        for row, record in zip(rows, calls):
+            row["cost"] = finished_cost(spec, store, record)
     related: Iterable[dict]
     if contact_id:
         related = store.actions(contact_id=contact_id, limit=1000)
