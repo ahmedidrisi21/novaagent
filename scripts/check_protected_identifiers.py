@@ -92,7 +92,7 @@ def check_import_direction() -> list[str]:
         rel = path.relative_to(ROOT)
         if is_platform(rel):
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
         for match in pattern.finditer(text):
             line = text[: match.start()].count("\n") + 1
             problems.append(
@@ -124,7 +124,7 @@ def check_model_identifiers() -> list[str]:
         rel = path.relative_to(ROOT)
         if not is_platform(rel):
             continue
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
         for number, line in enumerate(text.splitlines(), 1):
             if MODEL_ID_PATTERN.search(line) and "NOVA-" in line:
                 problems.append(
@@ -147,7 +147,7 @@ def check_protected_present() -> list[str]:
         rel = path.relative_to(ROOT)
         if rel.as_posix() in DOC_EXEMPT:
             continue
-        haystack.append(path.read_text(encoding="utf-8", errors="replace"))
+        haystack.append(path.read_text(encoding="utf-8-sig", errors="replace"))
     joined = "\n".join(haystack)
     for identifier in PROTECTED:
         if identifier not in joined:
