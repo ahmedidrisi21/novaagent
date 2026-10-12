@@ -12,6 +12,7 @@ the change probably belongs in `nova/`.
 | # | File | Change | Why | Seam that was missing | Merge risk |
 |---|---|---|---|---|---|
 | 1 | `AGENTS.md` | One row added to the routing table, pointing `nova/`, `deploy/` and `docs/platform/` at `nova/AGENTS.md` | Without it the boundary rules are invisible to future contributors and AI assistants, who are instructed to read the routing table before editing an area | None — this *is* the repo's mechanism for area guidance; it simply has to be registered | **Low.** A single row appended to a stable table |
+| 2 | `pyproject.toml` | `pyyaml==6.0.3` kept as a direct dependency | Upstream unified YAML on ruamel and dropped PyYAML; `nova/` is stdlib + PyYAML by rule and imports it in 13 modules | None — a dependency, not a seam. Porting `nova/` to ruamel is the alternative | **Low.** One line; re-check at each upstream merge that the pin still matches the lockfile |
 
 ## Not counted here
 
