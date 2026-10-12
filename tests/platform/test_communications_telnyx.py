@@ -243,16 +243,88 @@ def test_ending_a_call_that_already_ended_is_not_an_error(world):
     gateway.carriers["telnyx"].end_call("v3:cc-1")
 
 
-def test_a_recording_profile_is_refused_on_a_carrier_that_cannot_record():
+def test_a_recording_profile_needs_a_carrier_whose_adapter_records(monkeypatch):
+    import dataclasses
+
+    from nova.communications import providers
+    from nova.communications.providers import _vendor
+
     data = copy.deepcopy(SPEC)
     data["communications"]["agents"][0]["recording"] = {
         "enabled": True, "legal_basis": "All-party consent asked on every call, reviewed."}
+    parse_communications(data)  # Telnyx records
+    telnyx = providers.get_provider("telnyx")
+    monkeypatch.setitem(providers.PROVIDERS_BY_ID, "telnyx", dataclasses.replace(
+        telnyx, capabilities={**telnyx.capabilities, "recording": _vendor(True)}))
     with pytest.raises(SpecError, match="cannot record"):
         parse_communications(data)
     del data["communications"]["telnyx"]
     data["communications"]["agents"][0].pop("recording")
     with pytest.raises(SpecError, match="connection_id"):
         parse_communications(data)
+
+
+RECORDED = copy.deepcopy(SPEC)
+RECORDED["communications"]["consent_prompt"] = (
+    "May we record this call? Press 1 to allow it, or 2 to continue without recording.")
+RECORDED["communications"]["agents"][0]["recording"] = {
+    "enabled": True, "legal_basis": "All-party consent asked on every call, reviewed.",
+    "retention_days": 30}
+
+
+def test_a_telnyx_call_is_recorded_only_after_a_yes_and_its_files_are_deleted(world):
+    from nova.communications.recording import forget_contact, set_paused
+
+    gateway, fake, _ = world
+    gateway.spec = parse_communications(RECORDED)
+    record = gateway.request_call(agent="caller", contact_id="c1", purpose="support",
+                                  idempotency_key="k1").record
+    ref, dial_state = record.provider_call_ref, fake.requests[0][2]["client_state"]
+    post(gateway, *webhook("call.machine.detection.ended", ref, client_state=dial_state,
+                           result="human"))
+    action, speak = fake.actions()[-1]
+    post(gateway, *webhook("call.speak.ended", ref, client_state=speak["client_state"]))
+    action, gather = fake.actions()[-1]
+    assert action == "gather_using_speak" and gather["valid_digits"] == "12"
+    assert not any(a == "record_start" for a, _ in fake.actions())  # nothing before the yes
+
+    post(gateway, *webhook("call.gather.ended", ref, client_state=gather["client_state"],
+                           digits="1", status="valid"))
+    started = [p for a, p in fake.actions() if a == "record_start"]
+    assert len(started) == 1 and started[0]["channels"] == "dual"
+    assert fake.actions()[-1][0] == "transfer"  # then the engine takes the call
+    (recording,) = gateway.store.recordings(call_id=record.call_id)
+    assert recording["recording_ref"] == f"telnyx-rec:{ref}"
+
+    # The payment guard's pause reaches Telnyx as a call command.
+    gateway.store.advance(record.call_id, CallStatus.SESSION_CONNECTED,
+                          at="2026-10-12T15:00:20.000Z")
+    assert set_paused(gateway, record.call_id, True, actor="alice")
+    assert fake.actions()[-1][0] == "record_pause"
+
+    # Telnyx names only the call in the saved event's state; the recording is still found.
+    post(gateway, *webhook("call.recording.saved", "", client_state=started[0]["client_state"],
+                           recording_started_at="2026-10-12T15:00:10Z",
+                           recording_ended_at="2026-10-12T15:01:40Z"))
+    (saved,) = gateway.store.recordings(call_id=record.call_id)
+    assert (saved["state"], saved["duration_seconds"]) == ("completed", 90)
+
+    # Not saved yet at Telnyx: the delete fails and nothing is marked deleted.
+    assert forget_contact(gateway, "c1", actor="alice") == 0
+    assert gateway.store.recordings(call_id=record.call_id)
+
+    def saved_files(method, url, headers, body):
+        if method == "GET" and "/v2/recordings?" in url:
+            assert "filter%5Bcall_control_id%5D=" in url
+            return 200, json.dumps({"data": [{"id": "rec-a"}, {"id": "rec-b"}]}).encode()
+        return original(method, url, headers, body)
+
+    original = fake.__call__
+    gateway.carriers["telnyx"]._transport = saved_files
+    assert forget_contact(gateway, "c1", actor="alice") == 1
+    assert {path for method, path, _ in fake.requests if method == "DELETE"} == \
+        {"recordings/rec-a", "recordings/rec-b"}
+    assert gateway.store.recordings(call_id=record.call_id) == []
 
 
 def test_failover_moves_a_telnyx_call_by_command(world):

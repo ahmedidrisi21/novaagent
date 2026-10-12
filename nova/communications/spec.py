@@ -27,6 +27,7 @@ from nova.channels.providers import Verification
 from nova.communications.providers import Kind, get_provider
 from nova.communications.spec_budget import BudgetSpec, parse_budget
 from nova.communications.spec_delegation import DelegationSpec, parse_delegation
+from nova.communications.spec_insights import InsightsSpec, parse_insights
 from nova.communications.spec_vendors import VendorSpec, parse_vendors
 from nova.communications.spec_actions import (
     ActionsSpec,
@@ -285,6 +286,7 @@ class CommunicationsSpec:
     delegation: DelegationSpec = field(default_factory=DelegationSpec)
     budget: BudgetSpec = field(default_factory=BudgetSpec)
     vendors: VendorSpec = field(default_factory=VendorSpec)
+    insights: InsightsSpec = field(default_factory=InsightsSpec)
 
     @property
     def declared(self) -> bool:
@@ -313,6 +315,7 @@ class CommunicationsSpec:
             "delegation": self.delegation.to_dict(),
             "budget": self.budget.to_dict(),
             **self.vendors.to_dict(),
+            "insights": self.insights.to_dict(),
             "purposes": [p.to_dict() for p in self.purposes.values()],
             "agents": [p.to_dict() for p in self.profiles],
         }
@@ -508,6 +511,7 @@ def parse_communications(
     actions = parse_actions(doc.child("actions"))
     email = parse_email(doc.child("email"), allow_test=allow_test)
     delegation = parse_delegation(doc.child("delegation"))
+    insights = parse_insights(doc.child("insights"), email_provider=email.provider)
     vendors = parse_vendors(doc.child("telnyx"), doc.child("elevenlabs"), telephony=telephony,
                             voice=voice, source=source)
     budget = parse_budget(doc.child("budget"), providers={
@@ -651,6 +655,7 @@ def parse_communications(
         delegation=delegation,
         budget=budget,
         vendors=vendors,
+        insights=insights,
     )
 
 
@@ -674,6 +679,9 @@ def load_communications(
 
 def check_agents_exist(spec: CommunicationsSpec, agent_ids: Sequence[str]) -> None:
     known = set(agent_ids)
+    if spec.insights.assignee and spec.insights.assignee not in known:
+        raise SpecError(f"the weekly digest goes to {spec.insights.assignee!r}, which this bundle "
+                        "does not define", field="communications.insights.assignee")
     if spec.budget.alert_assignee and spec.budget.alert_assignee not in known:
         raise SpecError(f"budget alerts go to {spec.budget.alert_assignee!r}, which this bundle "
                         "does not define", field="communications.budget.alert_assignee")

@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 import threading
 import time
+from dataclasses import replace
 from datetime import timedelta
 from typing import Callable, Optional
 
@@ -248,6 +249,9 @@ def recording_event(gateway, carrier_id: str, *, headers, body: bytes, url: str 
         return IngestResult("rejected", str(exc), http_status=400)
     known = {r["recording_ref"]: r for r in gateway.store.recordings(
         call_id=event.call_id_hint)} if event.call_id_hint else {}
+    if not event.recording_ref and len(known) == 1:
+        # The carrier named only the call (by our id); it has one recording.
+        event = replace(event, recording_ref=next(iter(known)))
     if event.recording_ref not in known:
         return IngestResult("ignored", "not a recording this tenant started")
     state = _STATES.get(event.status)

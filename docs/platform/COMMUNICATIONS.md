@@ -707,10 +707,18 @@ handlers take it from there. For a carrier like this, an answer plan is **carrie
   borrows it lazily through one module (`ed25519.py`), like `websockets`. Without it, every
   Telnyx webhook is refused and `nova calls check` names the package.
 - **Engine failover works on Telnyx too**, by command.
-- **Not yet:** recording through Telnyx (the bundle refuses a recording profile on it), the
-  carrier's billed price (Telnyx reports it through a separate reporting API), and spoken
-  consent. Consent is asked by key press only, and a spoken "yes" counts as no answer,
-  which records nothing.
+- **Recording** (Phase 6). After an explicit yes:
+  - recording is a dual-channel `record_start`;
+  - the payment guard and operators pause and resume it with `record_pause` /
+    `record_resume`;
+  - deletion lists the call's saved files (`GET /v2/recordings?filter[call_control_id]=`)
+    and deletes each one. Until Telnyx has saved one, the delete fails and the retention
+    sweep retries it: nothing is marked deleted while it still exists.
+- **Consent is asked by key press only.** Word `consent_prompt` as a key-press question
+  ("Press 1 to allow it, or 2 to continue without recording"). A spoken "yes" counts as no
+  answer, which records nothing.
+- **Not yet:** the carrier's billed price, which Telnyx reports through a separate reporting
+  API.
 
 ### ElevenLabs Agents
 
@@ -736,6 +744,39 @@ agent over the Agents WebSocket. Audio passes through untouched (mu-law 8 kHz bo
   sentence. Prefer GPT-Live or the cascaded engine for calls that are recorded and may hear
   card details.
 
+## Phase 6: the weekly digest
+
+```yaml
+communications:
+  insights:
+    assignee: operations             # the digest becomes work for this agent
+    email_to: [ops@acme.example]     # and/or goes to staff by email (needs communications.email)
+    weekday: monday                  # sent on this day, for the week that ended
+```
+
+`nova calls insights BUNDLE [--days 7]` and `GET /communications/insights?days=7` (admin)
+build the digest on demand. With `communications.insights` declared, the sweep delivers
+last week's on the configured day (as `insights:<year>-W<week>` work and/or one email per
+address).
+
+| Section | |
+|---|---|
+| Calls | requested, connected (with rate), completed, minutes; why the rest did not connect; per agent and per purpose |
+| Refused by the gate | the five most common reasons |
+| Recording consent | yes, no, yes rate |
+| Opt-outs | contacts who stopped all contact, and email unsubscribes and bounces |
+| After-call actions | per kind, by outcome |
+| Handed between agents | delegations by outcome |
+| Voice engines | calls per engine, and failures |
+| Spend | estimated, against the monthly limit |
+| Waiting for a person | call approvals, actions and field reviews pending now |
+
+- **Counts only.** No contact, number or anything said appears. The gate's own reasons
+  quote the contact, so every quoted value is stripped before they are grouped. A test fails
+  if any contact id or number reaches the digest.
+- **Once a week.** Delivery is recorded only after it succeeds, and both channels are
+  idempotent on the week. With no board or sender yet, it is tried again at the next sweep.
+
 ## Not built yet, in the order it lands
 
 1. **Next:** a first live call on a test number, and a first live email.
@@ -743,10 +784,10 @@ agent over the Agents WebSocket. Audio passes through untouched (mu-law 8 kHz bo
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
 3. **Amazon Nova Sonic.** Bedrock's bidirectional stream needs an HTTP/2 event-stream
-   client that boto3 does not provide, which is a dependency decision. Also recording
-   through Telnyx, and a live benchmark of engine latency.
-4. **Later:** agent-drafted email, inbound replies, meeting booking, ringless voicemail
-   (with its own legal review), and a weekly insights digest.
+   client that boto3 does not provide, which is a dependency decision. Also a live
+   benchmark of engine latency.
+4. **Later:** agent-drafted email, inbound replies, meeting booking, and ringless voicemail
+   (with its own legal review).
 
 A dashboard screen for the call monitor and the action plans needs the dashboard's source,
 which is not here.

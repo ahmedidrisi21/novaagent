@@ -21,8 +21,12 @@ public key, and refused outside a five-minute window. Our call id rides in
 reference is stored.
 
 Vendor contract: https://developers.telnyx.com/api-reference/call-commands and the call
-webhook reference. Recording through Telnyx is not built yet; the bundle refuses a
-recording profile on this carrier rather than asking consent for nothing.
+webhook reference.
+
+**Recording** is dual-channel ``record_start`` after an explicit yes, paused and resumed by
+the payment guard with ``record_pause`` / ``record_resume``, and deleted by listing the
+call's saved files and deleting each. Consent is asked by key press: tenants using Telnyx
+should word ``consent_prompt`` as a key-press question.
 """
 
 from __future__ import annotations
@@ -31,6 +35,7 @@ import base64
 import binascii
 import json
 import time
+import urllib.parse
 from datetime import datetime
 from typing import Any, Callable, Mapping, Optional
 
@@ -53,6 +58,8 @@ API_BASE = "https://api.telnyx.com/v2"
 SIGNATURE_HEADER = "telnyx-signature-ed25519"
 TIMESTAMP_HEADER = "telnyx-timestamp"
 TOLERANCE = 300
+#: How a call's recording is known before Telnyx names the saved file.
+RECORDING_PREFIX = "telnyx-rec:"
 DEFAULT_VOICE = "female"
 
 #: ``call.hangup``'s cause -> how the call ended. Anything else is a provider failure.
@@ -285,7 +292,9 @@ class TelnyxTelephony(TelephonyProvider):
         if kind == "call.speak.ended":
             return "continue" if state.get("next") else "ignore"
         return {"call.machine.detection.ended": "answer", "call.gather.ended": "consent",
-                "call.initiated": "status", "call.hangup": "status"}.get(kind, "ignore")
+                "call.initiated": "status", "call.hangup": "status",
+                "call.recording.saved": "recording",
+                "call.recording.error": "recording"}.get(kind, "ignore")
 
     def continue_plan(self, headers: Mapping[str, str], body: bytes) -> None:
         """Run the steps a finished ``speak`` was holding back."""
@@ -338,16 +347,49 @@ class TelnyxTelephony(TelephonyProvider):
         return ConsentReply(str(payload.get("call_control_id") or ""), str(state.get("c") or ""),
                             digits=digits)
 
-    # -- recording: not through this adapter yet ------------------------------------------
+    # -- recording ------------------------------------------------------------------------
 
     def start_recording(self, call_id: str, provider_call_ref: str) -> str:
-        raise ProviderError("recording through Telnyx is not built yet")
+        """Dual-channel, from now. Telnyx names the file only once it is saved, so the
+        recording is known here by its call: one recording per call, ``telnyx-rec:<call>``."""
+        self._command(provider_call_ref, "record_start", {
+            "format": "mp3", "channels": "dual", "command_id": f"rec-{call_id}",
+            "client_state": _state({"c": call_id})})
+        return f"{RECORDING_PREFIX}{provider_call_ref}"
 
     def set_recording_paused(self, provider_call_ref: str, recording_ref: str, paused: bool) -> None:
-        raise ProviderError("recording through Telnyx is not built yet")
+        self._command(provider_call_ref, "record_pause" if paused else "record_resume", {})
 
     def delete_recording(self, recording_ref: str) -> None:
-        raise ProviderError("recording through Telnyx is not built yet")
+        """Delete every file Telnyx saved for the call. Until one is saved there is nothing
+        to delete yet, which is an error so the retention sweep asks again — never a
+        recording marked deleted that still exists."""
+        if not recording_ref.startswith(RECORDING_PREFIX):
+            raise ProviderError(f"not a Telnyx recording reference: {recording_ref!r}")
+        call = recording_ref[len(RECORDING_PREFIX):]
+        status, data = self._request(
+            "GET", "recordings?" + urllib.parse.urlencode({"filter[call_control_id]": call}))
+        if not 200 <= status < 300:
+            raise ProviderError(f"Telnyx could not list the call's recordings ({status})")
+        items = data.get("data") if isinstance(data.get("data"), list) else []
+        ids = [str(item["id"]) for item in items if isinstance(item, dict) and item.get("id")]
+        if not ids:
+            raise ProviderError("Telnyx has not saved this recording yet; deletion will retry")
+        for recording_id in ids:
+            status, _ = self._request("DELETE", f"recordings/{recording_id}")
+            if not (200 <= status < 300 or status == 404):
+                raise ProviderError(f"Telnyx could not delete recording {recording_id} ({status})")
 
     def parse_recording(self, headers: Mapping[str, str], body: bytes, url: str) -> RecordingEvent:
-        raise ValueError("recording through Telnyx is not built yet")
+        kind, payload, state, _ = self._event(body)
+        if kind not in ("call.recording.saved", "call.recording.error"):
+            raise ValueError(f"not a Telnyx recording event: {kind!r}")
+        call = str(payload.get("call_control_id") or "")
+        hint = str(state.get("c") or "")
+        if not (call or hint):
+            raise ValueError("a recording event that names no call")
+        saved = kind == "call.recording.saved"
+        seconds = _seconds_between(str(payload.get("recording_started_at") or ""),
+                                   str(payload.get("recording_ended_at") or "")) if saved else 0
+        return RecordingEvent(f"{RECORDING_PREFIX}{call}" if call else "", call, hint,
+                              "completed" if saved else "failed", seconds)

@@ -37,6 +37,7 @@ from nova.communications.gateway import CallGateway
 from nova.communications.actions import run_due
 from nova.communications.delegation import sweep_delegations
 from nova.communications.extraction import run_pending
+from nova.communications.insights import deliver_weekly
 from nova.communications.followup_email import expire_bodies
 from nova.communications.recording import expire
 from nova.communications.store import CallRecord
@@ -132,6 +133,10 @@ def sweep(gateway: CallGateway) -> list[Reconciled]:
         out.append(Reconciled("", "", "", f"recorded the carrier's bill for {billed} call(s)"))
     for percent in raise_alerts(gateway):
         out.append(Reconciled("", "", "", f"communications budget passed {percent}%"))
+
+    period = deliver_weekly(gateway)
+    if period:
+        out.append(Reconciled("", "", "", f"sent the weekly digest for {period}"))
 
     expired = expire(gateway)
     if expired:

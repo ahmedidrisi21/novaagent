@@ -306,6 +306,28 @@ def usage(api, query: Mapping[str, str]):
         gateway.store.close()
 
 
+def insights(api, query: Mapping[str, str]):
+    """The digest for a window (default: the last 7 days). Counts only: no contact appears."""
+    from datetime import timedelta
+
+    from nova.communications.insights import digest
+    from nova.communications.usage import _iso
+    from nova.control.api import Response
+    from nova.control.api import _error as error
+
+    gateway = _gateway(api, "control-api")
+    try:
+        try:
+            days = int(query.get("days") or 7)
+        except ValueError:
+            return error(400, "days must be a whole number")
+        until = gateway.now()
+        return Response(200, digest(gateway, since=_iso(until - timedelta(days=max(1, min(days, 92)))),
+                                    until=_iso(until)))
+    finally:
+        gateway.store.close()
+
+
 def list_delegations(api, query: Mapping[str, str]):
     from nova.communications.store import CommsStore
     from nova.control.api import Response
