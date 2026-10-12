@@ -52,6 +52,65 @@ def unsubscribe_url(gateway, contact_id: str) -> str:
     return f"{gateway.public_url.rstrip('/')}/email/{gateway.email.id}/unsubscribe?{query}"
 
 
+def reply_address(gateway, email_id: str) -> str:
+    """Where a reply to this email goes: the tenant's reply domain, tagged with the email it
+    answers and signed, so a reply can be matched to its email and cannot be forged onto
+    another. Without a reply domain, the tenant's own ``reply_to`` mailbox."""
+    domain = gateway.spec.email.reply_domain
+    if not domain or len(gateway.link_secret) < 16:
+        return gateway.spec.email.reply_to
+    return f"reply+{email_id}.{_reply_signature(gateway, email_id)}@{domain}"
+
+
+def _reply_signature(gateway, email_id: str) -> str:
+    message = f"{gateway.store.tenant_id}:reply:{email_id}".encode("utf-8")
+    return hmac.new(gateway.link_secret, message, hashlib.sha256).hexdigest()[:16]
+
+
+def replied_email_id(gateway, address: str) -> str:
+    """The email a reply address answers, if its signature holds; else ''."""
+    local, _, domain = address.strip().lower().rpartition("@")
+    if not local.startswith("reply+") or domain != gateway.spec.email.reply_domain.lower():
+        return ""
+    email_id, _, signature = local[len("reply+"):].partition(".")
+    if not email_id or not hmac.compare_digest(signature, _reply_signature(gateway, email_id)):
+        return ""
+    return email_id
+
+
+def deliver(gateway, *, key: str, call_id: str, contact_id: str, to: str, subject: str,
+            body: str) -> str:
+    """Send one email to a contact, once per ``key``. Returns our email id.
+
+    Every email leaves the same way: plain text, an unsubscribe footer and one-click
+    ``List-Unsubscribe``, a signed reply address, and an idempotency key at the provider,
+    so a re-run after a crash sends nothing twice. Raises ``ProviderError``."""
+    store = gateway.store
+    keep = gateway.spec.email.keep_body_days
+    email, _ = store.create_email(
+        action_id=key, call_id=call_id, contact_id=contact_id, to=to, subject=subject,
+        body=body if keep else "", provider=gateway.email.id,
+        body_until=_iso(gateway, timedelta(days=keep)) if keep else "", at=_iso(gateway))
+    if email["provider_ref"]:
+        return email["email_id"]  # sent before a crash; not again
+    link = unsubscribe_url(gateway, contact_id)
+    ref = gateway.email.send(OutboundEmail(
+        email_id=email["email_id"],
+        idempotency_key=f"nova-email-{store.tenant_id}-{key}"[:256],
+        sender=gateway.spec.email.sender, to=to, subject=subject,
+        text=f"{body.rstrip()}\n\n--\nTo stop these emails: {link}\n",
+        reply_to=reply_address(gateway, email["email_id"]),
+        headers={"List-Unsubscribe": f"<{link}>",
+                 "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"},
+    ))
+    store.set_email_ref(email["email_id"], ref, at=_iso(gateway))
+    return email["email_id"]
+
+
+def can_send(gateway) -> bool:
+    return gateway.email is not None and len(gateway.link_secret) >= 16 and bool(gateway.public_url)
+
+
 def send(gateway, action: dict):
     from nova.communications.actions import Outcome
 
@@ -63,28 +122,11 @@ def send(gateway, action: dict):
     if contact is None or contact.email != params["to"]:
         return Outcome("failed", error="the address on file changed after this email was "
                                        "proposed; it was not sent")
-    if len(gateway.link_secret) < 16 or not gateway.public_url:
+    if not can_send(gateway):
         return Outcome("release")
-    keep = gateway.spec.email.keep_body_days
-    email, _ = store.create_email(
-        action_id=action["action_id"], call_id=action["call_id"], contact_id=contact_id,
-        to=params["to"], subject=params["subject"], body=params["body"] if keep else "",
-        provider=gateway.email.id, body_until=_iso(gateway, timedelta(days=keep)) if keep else "",
-        at=_iso(gateway))
-    if email["provider_ref"]:
-        return Outcome("done", result=email["email_id"])  # sent before a crash; not again
-    link = unsubscribe_url(gateway, contact_id)
-    ref = gateway.email.send(OutboundEmail(
-        email_id=email["email_id"],
-        idempotency_key=f"nova-email-{gateway.store.tenant_id}-{action['action_id']}",
-        sender=gateway.spec.email.sender, to=params["to"], subject=params["subject"],
-        text=f"{params['body'].rstrip()}\n\n--\nTo stop these emails: {link}\n",
-        reply_to=gateway.spec.email.reply_to,
-        headers={"List-Unsubscribe": f"<{link}>",
-                 "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"},
-    ))
-    store.set_email_ref(email["email_id"], ref, at=_iso(gateway))
-    return Outcome("done", result=email["email_id"])
+    return Outcome("done", result=deliver(
+        gateway, key=action["action_id"], call_id=action["call_id"], contact_id=contact_id,
+        to=params["to"], subject=params["subject"], body=params["body"]))
 
 
 def ingest(gateway, provider_id: str, headers: Mapping[str, str], body: bytes) -> tuple[int, str]:
@@ -94,6 +136,15 @@ def ingest(gateway, provider_id: str, headers: Mapping[str, str], body: bytes) -
         return 404, "no such provider"
     if not provider.verify(headers, body):
         return 403, "rejected"
+    announced = provider.parse_inbound(headers, body)
+    if announced is not None:
+        from nova.communications.contracts import ProviderError
+        from nova.communications.replies import handle
+
+        try:
+            return 200, handle(gateway, provider, announced)
+        except ProviderError:
+            return 502, "could not fetch the message; retry"  # the provider redelivers
     try:
         events = provider.parse(headers, body)
     except ValueError:

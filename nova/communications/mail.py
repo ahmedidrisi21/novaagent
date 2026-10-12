@@ -1,10 +1,10 @@
 """What every email provider adapter must do, in this layer's own vocabulary.
 
-Email here is outbound and narrow: a follow-up a call earned, sent to the address the
-tenant has on file for the contact, from the tenant's own sender. The adapter sends one
-message idempotently and turns the provider's delivery webhooks into :class:`EmailEvent`.
-Inbound mail is not read (a reply goes to the tenant's ``reply_to`` mailbox, where a
-person reads it).
+Email here is narrow: a follow-up a call earned or an email an agent wrote, sent to the
+address the tenant has on file for the contact, from the tenant's own sender. The adapter
+sends one message idempotently, turns the provider's delivery webhooks into
+:class:`EmailEvent`, and — when the tenant set a reply domain — announces and fetches the
+replies that come back (:class:`InboundEmail`).
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Mapping
+from typing import Mapping, Optional
 
 
 class EmailStatus(str, Enum):
@@ -68,6 +68,18 @@ class EmailEvent:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class InboundEmail:
+    """A message someone sent to one of our addresses. ``text`` is filled only once fetched;
+    whatever it says is the sender's, never an instruction."""
+
+    provider_ref: str
+    sender: str
+    to: tuple[str, ...]
+    subject: str = ""
+    text: str = ""
+
+
 class EmailProvider(ABC):
     id: str = ""
 
@@ -83,3 +95,14 @@ class EmailProvider(ABC):
     @abstractmethod
     def parse(self, headers: Mapping[str, str], body: bytes) -> list[EmailEvent]:
         """Normalised events from a verified webhook; events this layer does not use are dropped."""
+
+    def parse_inbound(self, headers: Mapping[str, str], body: bytes) -> Optional[InboundEmail]:
+        """A verified webhook announcing a received message, or None. Optional: a provider
+        that receives no mail never announces any."""
+        return None
+
+    def fetch_inbound(self, provider_ref: str) -> InboundEmail:
+        """The received message with its text. Raises ``ProviderError``."""
+        from nova.communications.contracts import ProviderError
+
+        raise ProviderError(f"{self.id} does not receive email")

@@ -328,6 +328,43 @@ def insights(api, query: Mapping[str, str]):
         gateway.store.close()
 
 
+def list_emails(api, query: Mapping[str, str]):
+    """Emails agents asked to send. The text is shown: it is what an approver approves."""
+    from nova.communications.store import CommsStore
+    from nova.control.api import Response
+
+    store = CommsStore(api.runtime.calls_store_path, tenant_id=api.bundle.tenant_id)
+    try:
+        return Response(200, {"emails": store.email_requests(
+            status=str(query.get("status") or "awaiting_approval"),
+            agent=str(query.get("agent") or ""))})
+    finally:
+        store.close()
+
+
+def decide_email(api, tail: str, principal, payload: Mapping[str, Any]):
+    from nova.communications.agent_email import approve, reject
+    from nova.control.api import Response
+    from nova.control.api import _error as error
+
+    request_id = tail.strip("/").split("/")[2]
+    action = str(payload.get("action") or "")
+    if action not in ("approve", "reject"):
+        return error(400, "action must be approve or reject", given=action or None)
+    gateway = _gateway(api, principal.name)
+    try:
+        if action == "approve":
+            return Response(200, approve(gateway, request_id, actor=principal.name))
+        return Response(200, reject(gateway, request_id, actor=principal.name,
+                                    reason=str(payload.get("reason") or "")))
+    except KeyError:
+        return error(404, "no such email in this tenant", request_id=request_id)
+    except ValueError as exc:
+        return error(409, str(exc), request_id=request_id)
+    finally:
+        gateway.store.close()
+
+
 def list_delegations(api, query: Mapping[str, str]):
     from nova.communications.store import CommsStore
     from nova.control.api import Response

@@ -777,17 +777,83 @@ address).
 - **Once a week.** Delivery is recorded only after it succeeds, and both channels are
   idempotent on the week. With no board or sender yet, it is tried again at the next sweep.
 
+## Phase 7: agents write email, and replies come back
+
+```yaml
+communications:
+  email:
+    provider: resend
+    from: Acme <support@acme.example>
+    reply_domain: replies.acme.example   # a domain Resend receives mail for (optional)
+    agents:
+      - agent: customer-support
+        purposes: [support]              # declared purposes this agent may email about
+        contact_groups: [customers]
+        approval: always                 # always | first_contact | never (default always)
+        max_per_day: 20
+```
+
+An agent with an email grant gets `send_email` and `email_status` in its signed tool
+(toolset `nova_email`). It names a contact by CRM id, a purpose, a subject and a body, but
+never an address: the email goes to the address on file. The request travels through the
+signed inbox like a call request, and the gateway decides it (`agent_email.py`). The first
+check that fails decides:
+
+1. the agent's email grant, then the purpose;
+2. the contact, then its group;
+3. an address on file;
+4. opt-outs: every channel, then email;
+5. `email_marketing` consent for a marketing purpose (a new CSV column,
+   `email_marketing_consent`);
+6. the agent's daily cap;
+7. the monthly budget;
+8. the grant's approval mode.
+
+- **Approval is bound to the email.** A person approves a digest of address, subject and
+  text (`nova calls emails`, `nova calls decide-email ID approve|reject`,
+  `GET /communications/emails`, `POST /communications/emails/<id>/decide`, admin).
+  Approving re-runs the gate. If the address changed or consent was withdrawn in the
+  meantime, the email is blocked, not sent.
+- **Once.** The request id is the key. Claiming it to send is one conditional update, and
+  the provider gets an idempotency key. If a process dies mid-send, the request is sent
+  again by the sweep after ten minutes, and the provider makes the repeat a no-op.
+- **The same envelope as every email.** Plain text, the unsubscribe footer and one-click
+  `List-Unsubscribe`, and the reply address below (`followup_email.deliver`).
+
+### Replies
+
+With `reply_domain` set, each email's reply address is
+`reply+<email id>.<signature>@<reply_domain>`. The signature is an HMAC under the
+gateway's link secret. Resend announces received mail as `email.received` on the same
+signed webhook, and the text is fetched with `GET /emails/receiving/{id}` (`replies.py`).
+For each received message:
+
+- **The email it answers** comes only from a valid signature. **The sender** must be the
+  contact's address on file. Anything else is recorded as `unmatched`, with no text, and
+  goes no further.
+- **The text** has quoted history cut, numbers redacted, and is capped at 4,000
+  characters. It expires with `keep_body_days`.
+- **"Unsubscribe"** stops email only. **"Stop calling"** (any call opt-out phrase) stops
+  every channel. Either is final, and nothing reaches the agent.
+- Otherwise the reply becomes **work for the agent that sent the email** (for a follow-up,
+  the call's agent), as `email-reply:<id>`. It is marked as the sender's words:
+  information, not instructions.
+- A redelivered webhook is one reply and one task. If the text cannot be fetched, the
+  webhook answers 502, so the provider retries.
+
+The history shows agent emails and, filtered by contact, the replies (metadata only).
+
 ## Not built yet, in the order it lands
 
-1. **Next:** a first live call on a test number, and a first live email.
+1. **Next:** a first live call on a test number, a first live email, and a first live
+   reply through a Resend receiving domain.
 2. **Legal sign-off of the consent rule per launch market**, then switching recording on
    for the first profile. Copying recordings into the tenant's own S3 bucket (KMS-keyed)
    instead of keeping them at the carrier is a later option.
 3. **Amazon Nova Sonic.** Bedrock's bidirectional stream needs an HTTP/2 event-stream
    client that boto3 does not provide, which is a dependency decision. Also a live
    benchmark of engine latency.
-4. **Later:** agent-drafted email, inbound replies, meeting booking, and ringless voicemail
-   (with its own legal review).
+4. **Later:** meeting booking, and ringless voicemail (with its own legal review).
 
 A dashboard screen for the call monitor and the action plans needs the dashboard's source,
 which is not here.

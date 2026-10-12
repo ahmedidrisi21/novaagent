@@ -115,6 +115,16 @@ def register(sub) -> None:
     history.add_argument("--limit", type=int, default=50)
     history.add_argument("--json", action="store_true")
 
+    emails = command("emails", "emails agents asked to send, waiting for a person by default")
+    emails.add_argument("--status", default="awaiting_approval")
+    emails.add_argument("--json", action="store_true")
+
+    decide_email = command("decide-email", "approve (and send) or reject an agent's email")
+    decide_email.add_argument("request_id")
+    decide_email.add_argument("decision", choices=["approve", "reject"])
+    decide_email.add_argument("--reason", default="")
+    decide_email.add_argument("--actor", default="")
+
     insights = command("insights", "a digest of what calls achieved and cost (counts only)")
     insights.add_argument("--days", type=int, default=7, help="the last N days (default 7)")
     insights.add_argument("--json", action="store_true")
@@ -395,6 +405,36 @@ def _history(args, bundle, gateway, public_url) -> int:
     return 0
 
 
+def _emails(args, bundle, gateway, public_url) -> int:
+    rows = gateway.store.email_requests(status=args.status)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for row in rows:
+        print(f"  {row['request_id']}  {row['status']:18} {row['agent']:18} -> {row['contact_id']} "
+              f"<{row['to_addr']}>  [{row['purpose']}]")
+        print(f"      Subject: {row['subject']}")
+        for line in row["body"].splitlines()[:12]:
+            print(f"      | {line}")
+        if row["reason"]:
+            print(f"      {row['reason']}")
+    if not rows:
+        print("no emails in that state")
+    return 0
+
+
+def _decide_email(args, bundle, gateway, public_url) -> int:
+    from nova.communications.agent_email import approve, reject
+
+    if args.decision == "approve":
+        result = approve(gateway, args.request_id, actor=_actor(args))
+    else:
+        result = reject(gateway, args.request_id, actor=_actor(args), reason=args.reason)
+    print(f"{args.request_id}: {result['status']}" + (f" ({result['reason']})" if result["reason"]
+                                                       else ""))
+    return 0
+
+
 def _insights(args, bundle, gateway, public_url) -> int:
     from nova.communications.insights import digest, render
 
@@ -545,4 +585,6 @@ _COMMANDS = {
     "delegations": _delegations,
     "usage": _usage,
     "insights": _insights,
+    "emails": _emails,
+    "decide-email": _decide_email,
 }

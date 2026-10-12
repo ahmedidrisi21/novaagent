@@ -35,6 +35,8 @@ from nova.audit import new_correlation_id
 from nova.communications.contracts import ACTIVE, CallStatus, FailureReason, ProviderError
 from nova.communications.gateway import CallGateway
 from nova.communications.actions import run_due
+from nova.communications.agent_email import resume_sending
+from nova.communications.replies import expire as reply_expiry
 from nova.communications.delegation import sweep_delegations
 from nova.communications.extraction import run_pending
 from nova.communications.insights import deliver_weekly
@@ -124,6 +126,10 @@ def sweep(gateway: CallGateway) -> list[Reconciled]:
     if carried:
         out.append(Reconciled("", "", "", f"carried out {carried} post-call action(s)"))
     expire_bodies(gateway)
+    reply_expiry(gateway)
+    resent = resume_sending(gateway)
+    if resent:
+        out.append(Reconciled("", "", "", f"resumed {resent} interrupted agent email(s)"))
     delegated = sweep_delegations(gateway)
     if delegated:
         out.append(Reconciled("", "", "", f"assigned or expired {delegated} delegation(s)"))
