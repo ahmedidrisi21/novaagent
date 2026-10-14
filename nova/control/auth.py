@@ -137,6 +137,9 @@ WRITE_ROUTES: Mapping[str, str] = {
     "/communications/calls/plan": "admin",
     # Approving or rejecting an email an agent wrote. Admin: approving sends it.
     "/communications/emails/decide": "admin",
+    # Approving, rejecting or cancelling a meeting an agent asked for. Admin: approving puts
+    # an invitation in the contact's inbox.
+    "/communications/meetings/decide": "admin",
     # Pausing, resuming or deleting a schedule the runtime already holds. Admin:
     # stopping a nightly reconciliation is as consequential as releasing held work.
     "/automations/decide": "admin",

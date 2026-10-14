@@ -1,6 +1,6 @@
 """One timeline of everything that happened with a contact, an agent or a piece of work.
 
-Calls, the emails and actions they led to, and work handed between agents, newest first,
+Calls, the emails and actions they led to, meetings agents booked, and work handed between agents, newest first,
 each with its status, time, agent, provider, contact, task and who approved it. A row is
 **metadata only**: no transcript, no email text, no recording. Those stay behind the
 narrower routes that show one call or one email, so a timeline can be shown to more people
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Mapping
 
-CHANNELS = ("call", "email", "action", "delegation")
+CHANNELS = ("call", "email", "action", "delegation", "meeting")
 
 
 def _call_row(record) -> dict:
@@ -56,6 +56,15 @@ def _reply_row(reply: Mapping[str, Any]) -> dict:
             "id": reply["reply_id"], "status": f"reply {reply['outcome']}", "agent": "",
             "contact_id": reply["contact_id"], "task_id": reply["task_id"], "provider": "",
             "approved_by": "", "what": f"reply to email {reply['email_id']}", "reason": ""}
+
+
+def _meeting_row(request: Mapping[str, Any]) -> dict:
+    return {"at": request["created_at"], "updated_at": request["updated_at"],
+            "channel": "meeting", "id": request["request_id"], "status": request["status"],
+            "agent": request["agent"], "contact_id": request["contact_id"],
+            "task_id": request["task_id"], "provider": "", "approved_by": request["decided_by"],
+            "what": f"{request['event_type']} meeting at {request['start']}",
+            "reason": request["reason"]}
 
 
 def _delegation_row(record: Mapping[str, Any]) -> dict:
@@ -105,6 +114,8 @@ def timeline(store, *, contact_id: str = "", agent: str = "", channel: str = "",
              for e in emails]
     if contact_id:
         rows += [_reply_row(r) for r in store.replies(contact_id=contact_id)]
+    rows += [_meeting_row(m) for m in store.meeting_requests(agent=agent, contact_id=contact_id,
+                                                             limit=1000)]
     rows += [_delegation_row(d) for d in store.delegations(agent=agent, contact_id=contact_id,
                                                           limit=1000)]
 

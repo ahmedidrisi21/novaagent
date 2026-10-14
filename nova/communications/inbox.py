@@ -34,6 +34,7 @@ from nova.audit import new_correlation_id
 MASTER_KEY_NAME = "call-request.key"
 REQUESTS, RESULTS, DONE = "requests", "results", "done"
 DELEGATIONS, REPORTS, EMAILS = "delegations", "reports", "emails"
+MEETINGS, SLOTS = "meetings", "slots"
 _ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 #: Request files bigger than this are not requests.
 MAX_REQUEST_BYTES = 8192
@@ -81,7 +82,8 @@ def calling_grant(communications, agent: str, *, inbox: Path, master: bytes) -> 
     targets = routes.get(agent, ())
     receives = any(agent in to for to in routes.values())
     email = communications.email.grant(agent)
-    if not (calls or targets or receives or email):
+    meetings = communications.meetings.grant(agent)
+    if not (calls or targets or receives or email or meetings):
         return None
     grant = {
         "version": 1,
@@ -104,6 +106,15 @@ def calling_grant(communications, agent: str, *, inbox: Path, master: bytes) -> 
         grant["email"] = {"purposes": [
             {"id": purpose, "description": communications.purposes[purpose].description}
             for purpose in email.purposes]}
+    if meetings is not None:
+        grant["meetings"] = {
+            "purposes": [{"id": purpose, "description": communications.purposes[purpose].description}
+                         for purpose in meetings.purposes],
+            "event_types": [
+                {"id": e.id, "title": e.title, "duration_minutes": e.duration_minutes,
+                 "purposes": list(e.purposes)}
+                for e in communications.meetings.event_types if e.id in meetings.event_types],
+        }
     return grant
 
 
@@ -179,6 +190,35 @@ def _email(gateway, inbox: Path, agent: str, request_id: str,
                          task_id=str(payload.get("task_id") or ""))
 
 
+def _meeting(gateway, inbox: Path, agent: str, request_id: str,
+             payload: Mapping[str, Any]) -> dict:
+    from nova.communications.meetings import request_meeting
+
+    return request_meeting(gateway, agent=agent, request_id=request_id,
+                           contact_id=str(payload.get("contact_id") or ""),
+                           purpose=str(payload.get("purpose") or ""),
+                           event_type=str(payload.get("event_type") or ""),
+                           start=str(payload.get("start") or ""),
+                           task_id=str(payload.get("task_id") or ""))
+
+
+def _slots(gateway, inbox: Path, agent: str, request_id: str,
+           payload: Mapping[str, Any]) -> dict:
+    """Open times are read, not requested: the answer is final the moment it is written."""
+    from nova.communications.contracts import ProviderError
+    from nova.communications.meetings import open_times
+
+    day = str(payload.get("day") or "")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("day must be YYYY-MM-DD")
+    try:
+        times = open_times(gateway, agent=agent, contact_id=str(payload.get("contact_id") or ""),
+                           event_type=str(payload.get("event_type") or ""), day=day)
+    except ProviderError as exc:
+        return {"request_id": request_id, "status": "unavailable", "reason": str(exc)}
+    return {"request_id": request_id, "status": "ready", "day": day, "slots": times}
+
+
 def _report(gateway, inbox: Path, agent: str, request_id: str,
             payload: Mapping[str, Any]) -> dict:
     from nova.communications.delegation import report
@@ -200,6 +240,8 @@ SPOOLS: Mapping[str, Callable[..., dict]] = {
     DELEGATIONS: _delegation,
     REPORTS: _report,
     EMAILS: _email,
+    MEETINGS: _meeting,
+    SLOTS: _slots,
 }
 
 
@@ -281,6 +323,11 @@ def refresh(gateway, inbox: Path) -> int:
 
             request = gateway.store.email_request(str(body["request_id"]))
             fresh = email_view(request) if request else None
+        elif "event_type" in body and body.get("status") in ("awaiting_approval", "sending", "new"):
+            from nova.communications.meetings import view as meeting_view
+
+            request = gateway.store.meeting_request(str(body["request_id"]))
+            fresh = meeting_view(request) if request else None
         else:
             continue
         if fresh is not None and fresh != body:

@@ -3,9 +3,9 @@ version: 1.0.0
 description: >-
   NOVA Calling. Lets this agent request phone calls to contacts for its approved purposes and
   read where each request stands, and hand work to or report work for other agents along
-  the tenant's delegation routes. It never dials and never assigns work itself: the gateway
-  decides every request against consent, opt-outs, calling hours, limits, approval and the
-  delegation routes. Installed and maintained by NOVA; edits here are overwritten on the
+  the tenant's delegation routes, and ask for emails to contacts and meetings with them. It
+  never dials, sends or books itself: the gateway decides every request against consent,
+  opt-outs, calling hours, limits, approval and the delegation routes. Installed and maintained by NOVA; edits here are overwritten on the
   next apply.
 author: NOVA
 kind: standalone
@@ -17,3 +17,6 @@ provides_tools:
   - report_delegation
   - send_email
   - email_status
+  - book_meeting
+  - meeting_slots
+  - meeting_status

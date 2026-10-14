@@ -36,6 +36,7 @@ from nova.communications.contracts import ACTIVE, CallStatus, FailureReason, Pro
 from nova.communications.gateway import CallGateway
 from nova.communications.actions import run_due
 from nova.communications.agent_email import resume_sending
+from nova.communications.meetings import cancel_for_opted_out, resume_sending as resume_meetings
 from nova.communications.replies import expire as reply_expiry
 from nova.communications.delegation import sweep_delegations
 from nova.communications.extraction import run_pending
@@ -130,6 +131,12 @@ def sweep(gateway: CallGateway) -> list[Reconciled]:
     resent = resume_sending(gateway)
     if resent:
         out.append(Reconciled("", "", "", f"resumed {resent} interrupted agent email(s)"))
+    settled = resume_meetings(gateway)
+    if settled:
+        out.append(Reconciled("", "", "", f"settled {settled} meeting(s) left mid-booking"))
+    dropped = cancel_for_opted_out(gateway)
+    if dropped:
+        out.append(Reconciled("", "", "", f"cancelled {dropped} meeting(s) for opted-out contacts"))
     delegated = sweep_delegations(gateway)
     if delegated:
         out.append(Reconciled("", "", "", f"assigned or expired {delegated} delegation(s)"))

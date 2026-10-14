@@ -23,6 +23,8 @@ Variable                      Used for
 ``RESEND_API_KEY``            Resend: sends follow-up emails
 ``RESEND_WEBHOOK_SECRET``     verifies Resend's delivery webhooks (``whsec_...``)
 ``EMAIL_LINK_SECRET``         signs the unsubscribe link in every email (32+ chars)
+``CALCOM_API_KEY``           Cal.com: lists open times, books and cancels meetings
+``CALCOM_WEBHOOK_SECRET``     verifies Cal.com's booking webhooks
 ============================  ============================================================
 
 Non-secret settings — which reply model, which speech models — are in
@@ -55,6 +57,7 @@ from nova.communications.elevenlabs import DEFAULT_HOST, ElevenLabsVoice
 from nova.communications.openai_live import OpenAILiveVoice
 from nova.communications.spec_vendors import ELEVENLABS
 from nova.communications.telnyx import TelnyxTelephony
+from nova.communications.calcom import CalcomCalendar
 from nova.communications.resend import ResendEmail
 from nova.communications.spec import CASCADED_ENGINE, CommunicationsSpec
 from nova.communications.store import CommsStore
@@ -68,6 +71,7 @@ REQUIRED_ENV: Mapping[str, tuple[str, ...]] = {
     "openai-live": ("OPENAI_API_KEY", "OPENAI_PROJECT_ID", "OPENAI_WEBHOOK_SECRET"),
     "deepgram-cartesia": ("DEEPGRAM_API_KEY", "CARTESIA_API_KEY", "CASCADE_LLM_API_KEY"),
     "resend": ("RESEND_API_KEY", "RESEND_WEBHOOK_SECRET"),
+    "calcom": ("CALCOM_API_KEY", "CALCOM_WEBHOOK_SECRET"),
     "telnyx": ("TELNYX_API_KEY", "TELNYX_PUBLIC_KEY"),
     "elevenlabs-agents": ("ELEVENLABS_API_KEY",),
 }
@@ -79,7 +83,8 @@ def missing_credentials(spec: CommunicationsSpec, env: Mapping[str, str]) -> dic
     """Per allowed provider with an adapter, the variable names still unset. Names only."""
     out: dict[str, list[str]] = {}
     email = (spec.email.provider,) if spec.email.provider else ()
-    for provider in (*spec.telephony_providers, *spec.voice_providers, *email):
+    calendar = (spec.meetings.provider,) if spec.meetings.provider else ()
+    for provider in (*spec.telephony_providers, *spec.voice_providers, *email, *calendar):
         names = REQUIRED_ENV.get(provider)
         if names:
             missing = [name for name in names if not env.get(name)]
@@ -165,6 +170,10 @@ def build_gateway(
     if spec.email.provider == "resend" and "resend" not in missing:
         email = ResendEmail.from_env(env)
 
+    calendar = None
+    if spec.meetings.provider == "calcom" and "calcom" not in missing:
+        calendar = CalcomCalendar.from_env(env)
+
     return CallGateway(
         spec, store, audit, carriers,
         voices=voices,
@@ -172,6 +181,7 @@ def build_gateway(
         answers=answers,
         extractor=extractor_from(spec, env),
         email=email,
+        calendar=calendar,
         tasks=tasks,
         link_secret=env.get(LINK_SECRET_ENV, "").encode("utf-8"),
         public_url=public_url,
