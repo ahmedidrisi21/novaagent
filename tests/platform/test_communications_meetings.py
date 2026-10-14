@@ -6,7 +6,7 @@ import copy
 import hashlib
 import hmac
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -42,7 +42,7 @@ from tests.platform.test_communications_actions import Board
 from tests.platform.test_communications_agent_email import SPEC as BASE_SPEC
 from tests.platform.test_communications_agent_tool import COMMS, bundle_with, load_tool
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 PUBLIC = "https://calls.example.test"
 SLOTS = ["2026-10-14T15:00:00Z", "2026-10-14T16:00:00Z", "2026-10-15T15:00:00Z",
          "2026-10-16T15:00:00Z"]
@@ -199,7 +199,7 @@ def test_a_meeting_waiting_for_approval_is_refused_once_its_time_is_too_close(wo
     make, store, clock, rig = world
     gateway = make(spec_with("always"))
     meet(gateway, request_id="late0001")
-    clock["now"] = datetime(2026, 10, 14, 14, 0, tzinfo=timezone.utc)  # an hour before it
+    clock["now"] = datetime(2026, 10, 14, 14, 0, tzinfo=UTC)  # an hour before it
     with pytest.raises(ValueError, match="hours away"):
         approve(gateway, "late0001", actor="alice")
     assert store.meeting_request("late0001")["status"] == "blocked" and rig["cal"].bookings == {}
