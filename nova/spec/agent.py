@@ -51,7 +51,7 @@ class ModelSpec:
     region: str = ""
 
     @property
-    def deployment(self) -> "ProviderSpec":
+    def deployment(self) -> ProviderSpec:
         """This agent's overrides, in the shared provider vocabulary."""
         from nova.spec.deployment import ProviderSpec
 
@@ -65,7 +65,7 @@ class ModelSpec:
         )
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "ModelSpec":
+    def parse(cls, doc: Optional[Doc]) -> ModelSpec:
         if doc is None:
             return cls()
         from nova.spec.deployment import check_not_a_secret
@@ -117,7 +117,7 @@ class ToolsSpec:
     deny: tuple[str, ...] = ()
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "ToolsSpec":
+    def parse(cls, doc: Optional[Doc]) -> ToolsSpec:
         if doc is None:
             return cls()
         spec = cls(
@@ -157,7 +157,7 @@ class KnowledgeSpec:
     sources: tuple[str, ...] = ()
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "KnowledgeSpec":
+    def parse(cls, doc: Optional[Doc]) -> KnowledgeSpec:
         if doc is None:
             return cls()
         spec = cls(sources=tuple(doc.str_list("sources")))
@@ -180,7 +180,7 @@ class ApprovalSpec:
     required_for: tuple[str, ...] = ()
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "ApprovalSpec":
+    def parse(cls, doc: Optional[Doc]) -> ApprovalSpec:
         if doc is None:
             return cls()
         spec = cls(required_for=tuple(doc.str_list("required_for")))
@@ -207,7 +207,7 @@ class DelegationLimits:
     orchestrator_enabled: Optional[bool] = None
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "DelegationLimits":
+    def parse(cls, doc: Optional[Doc]) -> DelegationLimits:
         if doc is None:
             return cls()
         spec = cls(
@@ -264,10 +264,10 @@ class LimitsSpec:
     max_tool_calls_per_run: Optional[int] = None
     #: Injects a wrap-up request. NOT a limit — nothing terminates if it is ignored.
     soft_wrapup_after_seconds: Optional[int] = None
-    delegation: "DelegationLimits" = field(default_factory=lambda: DelegationLimits())
+    delegation: DelegationLimits = field(default_factory=lambda: DelegationLimits())
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "LimitsSpec":
+    def parse(cls, doc: Optional[Doc]) -> LimitsSpec:
         if doc is None:
             return cls()
         if doc.has("daily_token_budget"):
@@ -321,7 +321,7 @@ class DelegationSpec:
     may_assign_to: tuple[str, ...] = ()
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "DelegationSpec":
+    def parse(cls, doc: Optional[Doc]) -> DelegationSpec:
         if doc is None:
             return cls()
         spec = cls(may_assign_to=tuple(doc.str_list("may_assign_to")))
@@ -352,7 +352,7 @@ class ExtensionsSpec:
     plugins_disable: tuple[str, ...] = ()
 
     @classmethod
-    def parse(cls, doc: Optional[Doc]) -> "ExtensionsSpec":
+    def parse(cls, doc: Optional[Doc]) -> ExtensionsSpec:
         if doc is None:
             return cls()
         plugins = doc.child("plugins")
@@ -422,7 +422,7 @@ class AgentSpec:
         source: Optional[Path] = None,
         base_dir: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "AgentSpec":
+    ) -> AgentSpec:
         doc = Doc(data, source=source, env=env)
         agent_id = doc.identifier("id")
         instructions_path = doc.str_("instructions")

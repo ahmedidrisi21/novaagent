@@ -57,7 +57,7 @@ def read_usage(profile_dir: Path, agent_id: str) -> UsageSummary:
         connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
-            f"SELECT {_COLUMNS} FROM session_model_usage"  # noqa: S608 — fixed column list
+            f"SELECT {_COLUMNS} FROM session_model_usage"
         ).fetchall()
     except sqlite3.Error as exc:
         return UsageSummary(

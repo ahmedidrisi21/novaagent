@@ -211,7 +211,7 @@ class Doc:
                 seen.add(item)
         return out
 
-    def child(self, key: str, *, required: bool = False) -> Optional["Doc"]:
+    def child(self, key: str, *, required: bool = False) -> Optional[Doc]:
         """A nested mapping as its own :class:`Doc`, or None when absent."""
         value = self._raw(key)
         if value is None:

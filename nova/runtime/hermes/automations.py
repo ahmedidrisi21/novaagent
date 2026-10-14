@@ -92,7 +92,7 @@ def _recent_runs(
         placeholders = ",".join("?" for _ in job_ids)
         try:
             rows = connection.execute(
-                f"SELECT job_id, id, status, claimed_at, started_at, finished_at, error "  # noqa: S608
+                f"SELECT job_id, id, status, claimed_at, started_at, finished_at, error "
                 f"FROM executions WHERE job_id IN ({placeholders}) "
                 "ORDER BY claimed_at DESC, id DESC",
                 job_ids,
@@ -227,7 +227,7 @@ def list_automations(
         try:
             # include_disabled: a paused automation is still an automation.
             records = cron_jobs.list_jobs(include_disabled=True)
-        except Exception:  # noqa: BLE001 — an unreadable store is "none", not a 500
+        except Exception:
             return []
 
     ids = tuple(str(r.get("id") or "") for r in records if r.get("id"))
@@ -368,5 +368,5 @@ def validate_schedule(schedule: str):
 
     try:
         return parse_schedule(schedule)
-    except Exception as exc:  # noqa: BLE001 — the runtime's own message is the useful one
+    except Exception as exc:
         raise SpecError(f"schedule {schedule!r} is not valid: {exc}") from None

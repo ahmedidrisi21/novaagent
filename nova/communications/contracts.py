@@ -204,7 +204,7 @@ class AnswerPlan:
     hang_up: bool = False
     say: str = ""
     language: str = ""
-    connect: Optional[Union[SipTarget, StreamTarget]] = None
+    connect: Optional[SipTarget | StreamTarget] = None
     #: Ask for recording consent after ``say`` and stop there; the consent callback then
     #: decides what follows. Never set together with ``connect``.
     consent: Optional[ConsentPrompt] = None
@@ -285,7 +285,7 @@ class TelephonyProvider(ABC):
         treated as one.
         """
 
-    def redirect(self, provider_call_ref: str, plan: "AnswerPlan") -> None:
+    def redirect(self, provider_call_ref: str, plan: AnswerPlan) -> None:
         """Move a live call to a new plan — another voice engine — without hanging up.
 
         Optional: a carrier that cannot raises :class:`ProviderError`, and the gateway ends
@@ -301,7 +301,7 @@ class TelephonyProvider(ABC):
     def continue_plan(self, headers: Mapping[str, str], body: bytes) -> None:
         """Run the next step of a plan the carrier was carrying out (``continue`` events)."""
 
-    def fetch_billing(self, provider_call_ref: str) -> Optional["Billing"]:
+    def fetch_billing(self, provider_call_ref: str) -> Optional[Billing]:
         """What the carrier charged for a finished call, once it has settled. None while it
         has not, or for a carrier that does not report it."""
         return None
@@ -346,7 +346,7 @@ class VoiceEngine(ABC):
     id: str = ""
 
     @abstractmethod
-    def bridge_target(self, call_id: str, token: str) -> Union[SipTarget, StreamTarget]:
+    def bridge_target(self, call_id: str, token: str) -> SipTarget | StreamTarget:
         """Where the carrier should send this call, carrying its id and token."""
 
 
@@ -377,7 +377,7 @@ class SipVoiceEngine(VoiceEngine):
     def hang_up(self, session_id: str) -> None:
         """End a session. Must be safe to call twice."""
 
-    def attach(self, session_id: str, hooks: "CallHooks") -> None:
+    def attach(self, session_id: str, hooks: CallHooks) -> None:
         """Follow an accepted session: answer mid-call questions with ``hooks.answer`` and
         report what is said to ``hooks.heard``. Engines without a side channel do nothing:
         their sessions run on instructions alone, and cannot be recorded (nothing would
@@ -388,10 +388,10 @@ class MediaChannel(ABC):
     """One WebSocket, as the media bridge sees it. Real or scripted."""
 
     @abstractmethod
-    def send(self, message: Union[str, bytes]) -> None: ...
+    def send(self, message: str | bytes) -> None: ...
 
     @abstractmethod
-    def recv(self, timeout: Optional[float] = None) -> Union[str, bytes]:
+    def recv(self, timeout: Optional[float] = None) -> str | bytes:
         """Next message. Raises ``EOFError`` when the other side has gone."""
 
     @abstractmethod

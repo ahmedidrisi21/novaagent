@@ -150,7 +150,7 @@ class LiveSideband:
         self._send("session.thinking.append", delegation_id, "Looking that up.")
         try:
             reply = self._answer(question) if question and self._answer else ""
-        except Exception as exc:  # noqa: BLE001 — a failed lookup must not drop the call
+        except Exception as exc:
             log.warning("delegation lookup failed: %s", exc)
             reply = ""
         reply = reply or ("I could not find that. Offer to follow up in writing rather than guess.")
@@ -191,7 +191,7 @@ class OpenAILiveVoice(SipVoiceEngine):
         self._clock = clock
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str], **options) -> "OpenAILiveVoice":
+    def from_env(cls, env: Mapping[str, str], **options) -> OpenAILiveVoice:
         return cls(
             api_key=env.get("OPENAI_API_KEY", ""),
             project_id=env.get("OPENAI_PROJECT_ID", ""),
@@ -271,7 +271,7 @@ class OpenAILiveVoice(SipVoiceEngine):
         def serve() -> None:
             try:
                 channel = self._connector(url, headers)
-            except Exception as exc:  # noqa: BLE001 — no sideband means no lookups, not no call
+            except Exception as exc:
                 log.warning("live sideband for %s did not open: %s", session_id, exc)
                 return
             try:

@@ -56,7 +56,7 @@ def runtime_version() -> str:
         from hermes_cli.plugins_manifest import running_hermes_version
 
         return str(running_hermes_version() or "")
-    except Exception:  # noqa: BLE001 — an unreadable version is a fact, not a failure
+    except Exception:
         return ""
 
 

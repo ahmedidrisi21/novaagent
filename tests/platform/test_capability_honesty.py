@@ -114,11 +114,7 @@ def test_an_unknown_assignee_inherits_nothing_rather_than_failing():
 def test_the_capability_docstring_states_the_boundary():
     """The flag means "per-agent store", not "agents cannot see each other's credentials".
     A reader of the capability table must not have to discover that empirically."""
-    from nova.runtime.base import RuntimeCapabilities
-
-    doc = RuntimeCapabilities.__doc__ or ""
     annotations = Path("nova/runtime/base.py").read_text(encoding="utf-8")
-    marker = annotations[annotations.index("credential_isolation")::]
     context = annotations[: annotations.index("credential_isolation")][-1200:]
     assert "process environment" in context
     assert "does not mean" in context.lower()

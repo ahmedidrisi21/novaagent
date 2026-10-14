@@ -158,7 +158,7 @@ def list_tasks(
         if connection is None:
             return []
         available = _columns(connection)
-        query = f"SELECT {available} FROM tasks"  # noqa: S608 — names from PRAGMA
+        query = f"SELECT {available} FROM tasks"
         clauses: list[str] = []
         params: list[object] = []
         if agent_id:
@@ -197,7 +197,7 @@ def get_task(home: Path, task_id: str, *, tenant_id: str = "") -> Optional[TaskV
             return None
         try:
             row = connection.execute(
-                f"SELECT {_columns(connection)} FROM tasks WHERE id = ?",  # noqa: S608
+                f"SELECT {_columns(connection)} FROM tasks WHERE id = ?",
                 (task_id,),
             ).fetchone()
         except sqlite3.Error:
@@ -243,7 +243,7 @@ def _child_rows(
     """
     try:
         return connection.execute(
-            f"SELECT * FROM {table} WHERE task_id = ? ORDER BY {order}",  # noqa: S608
+            f"SELECT * FROM {table} WHERE task_id = ? ORDER BY {order}",
             (task_id,),
         ).fetchall()
     except sqlite3.Error:

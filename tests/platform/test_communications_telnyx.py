@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import copy
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -23,7 +23,7 @@ from nova.errors import SpecError
 from tests.platform.test_communications_live import Scripted, wait_for
 
 NOW = 1_791_817_200  # 2026-10-12T15:00:00Z
-START = datetime.fromtimestamp(NOW, tz=timezone.utc)
+START = datetime.fromtimestamp(NOW, tz=UTC)
 PUBLIC = "https://calls.example.test"
 EVENTS = "/calls/telnyx/events"
 SECRET = b"a-bridge-secret-of-enough-length"

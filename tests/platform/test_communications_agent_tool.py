@@ -8,7 +8,7 @@ import json
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 
 import pytest
@@ -26,7 +26,7 @@ from tests.platform.conftest import EXAMPLE_BUNDLE
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "nova" / "runtime" / "hermes" / "calling_tool.py"
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 
 COMMS = {"communications": {
     "allow_test_providers": True,
@@ -85,7 +85,7 @@ def test_the_installed_tool_imports_nothing_from_nova(applied):
     probe = (f"import sys, importlib.util; sys.modules['nova'] = None; "
              f"s = importlib.util.spec_from_file_location('t', {str(installed)!r}); "
              f"m = importlib.util.module_from_spec(s); s.loader.exec_module(m); print('ok')")
-    result = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-I", "-c", probe], capture_output=True, text=True, check=False)
     assert result.stdout.strip() == "ok", result.stderr
 
 

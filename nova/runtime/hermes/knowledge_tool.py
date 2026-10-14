@@ -36,7 +36,7 @@ import os
 import re
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -64,7 +64,7 @@ MAX_RESULTS = 10
 #: three whole chunks usually is not.
 MAX_PASSAGE_CHARS = 900
 
-_CACHE: Dict[str, Any] = {}
+_CACHE: dict[str, Any] = {}
 
 _DELIMITER = re.compile(r"untrusted_tool_result", re.IGNORECASE)
 
@@ -79,7 +79,7 @@ def _config_path() -> Path:
     return Path(__file__).resolve().parents[2] / CONFIG_FILENAME
 
 
-def _load_config() -> Optional[Dict[str, Any]]:
+def _load_config() -> Optional[dict[str, Any]]:
     """Read and cache the configuration. None when absent or unreadable.
 
     Cached per process for the same reason the policy is: a worker handles one task and the
@@ -87,7 +87,7 @@ def _load_config() -> Optional[Dict[str, Any]]:
     """
     if "config" in _CACHE:
         return _CACHE["config"]
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[dict[str, Any]] = None
     try:
         path = _config_path()
         if path.is_file():
@@ -100,7 +100,7 @@ def _load_config() -> Optional[Dict[str, Any]]:
     return config
 
 
-def _granted_sources(config: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _granted_sources(config: dict[str, Any]) -> list[dict[str, Any]]:
     raw = config.get("sources")
     return [entry for entry in raw if isinstance(entry, dict)] if isinstance(raw, list) else []
 
@@ -108,7 +108,7 @@ def _granted_sources(config: Dict[str, Any]) -> List[Dict[str, Any]]:
 # -- the tool ---------------------------------------------------------------
 
 
-def _schema(config: Dict[str, Any]) -> Dict[str, Any]:
+def _schema(config: dict[str, Any]) -> dict[str, Any]:
     """The tool schema, with this agent's own corpora named in its description.
 
     Naming them is what makes the tool usable: a model that cannot see which corpora exist
@@ -166,7 +166,7 @@ def _schema(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def handle_knowledge_search(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_knowledge_search(args: dict[str, Any], **_kwargs: Any) -> str:
     """Run one scoped search and format the result. Never raises into the agent loop."""
     config = _load_config()
     if not config:
@@ -210,7 +210,7 @@ def handle_knowledge_search(args: Dict[str, Any], **_kwargs: Any) -> str:
     correlation_id = _record(config, "intent", question=question, sources=scope, limit=limit)
     try:
         hits = _run_search(config, question, scope, limit)
-    except Exception as exc:  # noqa: BLE001 — a retrieval bug must not kill the task
+    except Exception as exc:
         _record(
             config, "failed", question=question, sources=scope, limit=limit,
             correlation_id=correlation_id, error=f"{type(exc).__name__}: {exc}",
@@ -230,8 +230,8 @@ def handle_knowledge_search(args: Dict[str, Any], **_kwargs: Any) -> str:
 
 
 def _run_search(
-    config: Dict[str, Any], question: str, scope: Sequence[str], limit: int
-) -> List[Dict[str, Any]]:
+    config: dict[str, Any], question: str, scope: Sequence[str], limit: int
+) -> list[dict[str, Any]]:
     """Open the index read-only and search it.
 
     Read-only at the connection level, not merely by convention: the worker process has no
@@ -252,7 +252,7 @@ def _run_search(
 # -- presenting the result --------------------------------------------------
 
 
-def _scan(text: str) -> List[str]:
+def _scan(text: str) -> list[str]:
     """Threat-pattern ids found in retrieved text, or none if the scanner is unavailable.
 
     Imported lazily and inside a try: this module also runs in tests where the runtime is
@@ -266,15 +266,15 @@ def _scan(text: str) -> List[str]:
         return []
     try:
         from tools.threat_patterns import scan_for_threats
-    except Exception:  # noqa: BLE001 — no scanner available in this process
+    except Exception:
         return []
     try:
         return list(scan_for_threats(text, scope="context"))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return []
 
 
-def _format(question: str, hits: Sequence[Dict[str, Any]], findings: Sequence[str]) -> str:
+def _format(question: str, hits: Sequence[dict[str, Any]], findings: Sequence[str]) -> str:
     """The tool result, wrapped in the runtime's own untrusted-content boundary."""
     if not hits:
         return (
@@ -283,7 +283,7 @@ def _format(question: str, hits: Sequence[Dict[str, Any]], findings: Sequence[st
             "exists to replace."
         )
 
-    blocks: List[str] = []
+    blocks: list[str] = []
     for position, hit in enumerate(hits, start=1):
         passage = str(hit.get("text") or "").strip()
         if len(passage) > MAX_PASSAGE_CHARS:
@@ -332,14 +332,14 @@ def _wrap(content: str) -> str:
 
 
 def _record(
-    config: Dict[str, Any],
+    config: dict[str, Any],
     phase: str,
     *,
     question: str,
     sources: Sequence[str],
     limit: int,
     correlation_id: str = "",
-    hits: Optional[Sequence[Dict[str, Any]]] = None,
+    hits: Optional[Sequence[dict[str, Any]]] = None,
     findings: Sequence[str] = (),
     error: str = "",
 ) -> str:
@@ -355,7 +355,7 @@ def _record(
     if not target:
         return correlation_id
 
-    detail: Dict[str, Any] = {
+    detail: dict[str, Any] = {
         "query": question[:500],
         "sources": list(sources),
         "limit": limit,
@@ -378,7 +378,7 @@ def _record(
     event = {
         "event_id": uuid.uuid4().hex,
         "correlation_id": correlation_id,
-        "ts": datetime.now(timezone.utc)
+        "ts": datetime.now(UTC)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z"),
         "kind": "knowledge.search",

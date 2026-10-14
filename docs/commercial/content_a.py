@@ -632,8 +632,7 @@ def part_4():
     s += [h2("4.4  The decision")]
 
     s += [Panel([
-        Paragraph('<font color="#%s"><b>#1 TARGET — UK ACCOUNTANCY PRACTICES, 20–150 STAFF</b></font>'
-                  % GOOD.hexval()[2:], S["h3"]),
+        Paragraph(f'<font color="#{GOOD.hexval()[2:]}"><b>#1 TARGET — UK ACCOUNTANCY PRACTICES, 20–150 STAFF</b></font>', S["h3"]),
         P("Independent and mid-tier practices outside the Top 50. Not the Big Four, not "
           "one-person bookkeepers."),
         P("<b>Why it wins on evidence, not vibes:</b>"),
@@ -669,13 +668,12 @@ def part_4():
                   "shallow across the whole economy (~1.6 technologies per adopter).",
                   S["bullet"]),
         Gap(2),
-        Paragraph('<font color="#%s"><b>The honest counter-argument:</b></font> ICAEW is '
+        Paragraph(f'<font color="#{WARNING.hexval()[2:]}"><b>The honest counter-argument:</b></font> ICAEW is '
                   'publicly flagging over-reliance on AI as "the next big threat" to firms\' '
                   'reputation. That is a real objection and you will hear it. It is also '
                   'the best possible setup for NOVA\'s actual differentiator — approvals, '
                   'audit, per-agent permissions and citations are the answer to exactly '
-                  'that fear. Lead with it rather than waiting to be hit with it.'
-                  % WARNING.hexval()[2:], S["body"]),
+                  'that fear. Lead with it rather than waiting to be hit with it.', S["body"]),
     ], accent=GOOD, fill=PANEL_HI)]
 
     s += [Gap(4)]
@@ -719,7 +717,7 @@ def part_5():
         "named, painful, measurable job.", "lede")]
 
     s += [Panel([
-        Paragraph('<font color="#%s"><b>THE OFFER</b></font>' % ACCENT.hexval()[2:], S["kicker"]),
+        Paragraph(f'<font color="#{ACCENT.hexval()[2:]}"><b>THE OFFER</b></font>', S["kicker"]),
         Paragraph("NOVA Client Response &amp; Records Desk", S["h1"]),
         Gap(2),
         P("<b>The promise:</b> your practice stops losing partner and manager hours to "
@@ -1024,8 +1022,8 @@ def part_7():
 
     s += [h2("7.4  What not to do")]
     s += [Panel([
-        Paragraph('<font color="#%s"><b>PRICING MISTAKES THAT WILL COST YOU THE BUSINESS</b>'
-                  '</font>' % CRITICAL.hexval()[2:], S["h3"]),
+        Paragraph(f'<font color="#{CRITICAL.hexval()[2:]}"><b>PRICING MISTAKES THAT WILL COST YOU THE BUSINESS</b>'
+                  '</font>', S["h3"]),
         Paragraph("<bullet>&#8226;</bullet><b>Never price per prompt, per token or per "
                   "message.</b> It makes the customer ration usage, which kills adoption, "
                   "which kills the renewal. It also makes your revenue a function of model "
@@ -1282,8 +1280,7 @@ def part_10():
 
     s += [h2("10.3  Paid advertising — the recommendation is no")]
     s += [Panel([
-        Paragraph('<font color="#%s"><b>DO NOT RUN PAID ADS UNTIL CUSTOMER THREE</b></font>'
-                  % CRITICAL.hexval()[2:], S["h3"]),
+        Paragraph(f'<font color="#{CRITICAL.hexval()[2:]}"><b>DO NOT RUN PAID ADS UNTIL CUSTOMER THREE</b></font>', S["h3"]),
         P("This is a considered recommendation, not caution for its own sake. Paid "
           "acquisition converts attention into customers. You currently have no proven "
           "conversion, no case study, no measured ROI claim, and no landing page that has "

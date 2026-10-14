@@ -16,7 +16,7 @@ import json
 import os
 import threading
 import time
-from datetime import timedelta, timezone
+from datetime import timedelta, timezone, UTC
 from pathlib import Path
 
 from nova.audit import AuditLog, new_correlation_id
@@ -206,7 +206,7 @@ def _print_call(record) -> None:
 
 
 def _stamp(gateway) -> str:
-    return gateway.now().astimezone(timezone.utc).isoformat(timespec="milliseconds").replace(
+    return gateway.now().astimezone(UTC).isoformat(timespec="milliseconds").replace(
         "+00:00", "Z")
 
 
@@ -486,7 +486,7 @@ def _insights(args, bundle, gateway, public_url) -> int:
 
 
 def _stamp_at(moment) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _usage(args, bundle, gateway, public_url) -> int:

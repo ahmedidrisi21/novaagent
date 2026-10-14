@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -155,7 +155,7 @@ class KnowledgeIndex:
     # -- lifecycle ---------------------------------------------------------
 
     @classmethod
-    def open(cls, path: Path | str, *, create: bool = True) -> "KnowledgeIndex":
+    def open(cls, path: Path | str, *, create: bool = True) -> KnowledgeIndex:
         path = Path(path).expanduser()
         if not path.exists() and not create:
             raise NovaError(f"no knowledge index at {path}")
@@ -204,7 +204,7 @@ class KnowledgeIndex:
     def close(self) -> None:
         self._connection.close()
 
-    def __enter__(self) -> "KnowledgeIndex":
+    def __enter__(self) -> KnowledgeIndex:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -228,7 +228,7 @@ class KnowledgeIndex:
         few dozen rows, and would be a new class of bug for no measurable gain.
         """
         doc_id = document_id(record.source_id, record.doc_path)
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         with self._connection:
             self._connection.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
             self._connection.executemany(
@@ -271,7 +271,7 @@ class KnowledgeIndex:
 
     def touch_document(self, record: DocumentRecord) -> None:
         """Record that an unchanged document was seen, without rewriting its chunks."""
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        now = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         with self._connection:
             self._connection.execute(
                 "UPDATE documents SET indexed_at = ? WHERE doc_id = ?",
@@ -378,4 +378,4 @@ def document_id(source_id: str, doc_path: str) -> str:
     """A stable id for one document within one corpus."""
     import hashlib
 
-    return hashlib.sha256(f"{source_id}\0{doc_path}".encode("utf-8")).hexdigest()[:32]
+    return hashlib.sha256(f"{source_id}\0{doc_path}".encode()).hexdigest()[:32]

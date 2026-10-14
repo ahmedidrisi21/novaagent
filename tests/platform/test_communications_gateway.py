@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 import pytest
 
@@ -29,7 +29,7 @@ from nova.communications.contracts import PlaceCall
 from nova.communications.mock import MockTelephony
 
 #: 10:00 in Chicago, inside default calling hours.
-NOON_UTC = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+NOON_UTC = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 
 SPEC = {
     "communications": {

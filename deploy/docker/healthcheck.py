@@ -60,7 +60,7 @@ def main() -> int:
             status = response.status
     except urllib.error.HTTPError as exc:
         status = exc.code
-    except Exception as exc:  # noqa: BLE001 — any failure to reach it is unhealthy
+    except Exception as exc:
         print(f"health: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 

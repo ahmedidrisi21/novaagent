@@ -57,7 +57,7 @@ def master_key(home: Path) -> bytes:
 
 
 def agent_key(master: bytes, agent: str) -> str:
-    return hmac.new(master, f"agent:{agent}".encode("utf-8"), hashlib.sha256).hexdigest()
+    return hmac.new(master, f"agent:{agent}".encode(), hashlib.sha256).hexdigest()
 
 
 def canonical(payload: Mapping[str, Any]) -> bytes:

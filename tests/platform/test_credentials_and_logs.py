@@ -236,8 +236,7 @@ def test_a_value_with_awkward_characters_round_trips(live):
          "line=[l for l in open(sys.argv[1]) if l.startswith('TELEGRAM_BOT_TOKEN=')][0];"
          "print(shlex.split(line.strip().split('=',1)[1])[0], end='')",
          str(env)],
-        capture_output=True, text=True,
-    )
+        capture_output=True, text=True, check=False)
     assert value.stdout == awkward, f"the value did not survive quoting: {value.stdout!r}"
 
 

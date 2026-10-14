@@ -285,7 +285,6 @@ class Panel(Flowable):
             c.rect(0, 2 * mm, 1.3 * mm, self.height - 4 * mm, stroke=0, fill=1)
             x += 2.6 * mm
         y = self.height - self.pad
-        inner = self.width - 2 * self.pad - (2.6 * mm if self.accent else 0)
         for f, h in zip(self.content, self._heights):
             y -= h
             f.drawOn(c, x, y)

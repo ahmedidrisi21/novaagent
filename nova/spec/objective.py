@@ -54,7 +54,7 @@ class PlanStep:
     decompose: bool = False
 
     @classmethod
-    def parse(cls, data: Any, *, source: Optional[Path], prefix: str, env) -> "PlanStep":
+    def parse(cls, data: Any, *, source: Optional[Path], prefix: str, env) -> PlanStep:
         doc = Doc(data, source=source, prefix=prefix, env=env)
         step = cls(
             id=doc.identifier("id"),
@@ -134,7 +134,7 @@ class ObjectiveSpec:
         *,
         source: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "ObjectiveSpec":
+    ) -> ObjectiveSpec:
         doc = Doc(data, source=source, env=env)
         identifier = doc.identifier("id")
 

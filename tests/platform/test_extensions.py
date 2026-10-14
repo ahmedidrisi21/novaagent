@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-import nova.runtime.hermes  # noqa: F401 — registers the extension discovery
+import nova.runtime.hermes
 from nova.apply import apply_bundle
 from nova.audit import AuditLog
 from nova.control import ControlAPI

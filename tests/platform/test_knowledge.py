@@ -22,6 +22,7 @@ from nova.knowledge import (
 )
 from nova.knowledge.index import fts5_available
 from nova.knowledge.query import EmptyQuery, build_match_expression
+import itertools
 
 HANDBOOK = """# Refund Policy
 
@@ -206,7 +207,7 @@ def test_a_citation_never_claims_lines_the_chunk_does_not_own():
     text = "\n\n".join(f"Paragraph {n} " + "word " * 60 for n in range(12))
     chunks = chunk_document(text, source_id="s", doc_path="d.md", max_chars=600, overlap_chars=150)
     assert len(chunks) > 2
-    for previous, current in zip(chunks, chunks[1:]):
+    for previous, current in itertools.pairwise(chunks):
         assert current.start_line >= previous.start_line
 
 

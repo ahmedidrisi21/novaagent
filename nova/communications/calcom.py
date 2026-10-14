@@ -21,7 +21,7 @@ import hashlib
 import hmac
 import json
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any, Mapping, Optional
 
 from nova.communications.booking import (
@@ -55,8 +55,8 @@ _DEAD = ("cancelled", "rejected")
 def _utc(value: str) -> str:
     moment = datetime.fromisoformat(value)
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class CalcomCalendar(CalendarProvider):
@@ -72,7 +72,7 @@ class CalcomCalendar(CalendarProvider):
         self._transport = transport
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str], **options) -> "CalcomCalendar":
+    def from_env(cls, env: Mapping[str, str], **options) -> CalcomCalendar:
         return cls(api_key=env.get("CALCOM_API_KEY", ""),
                    webhook_secret=env.get("CALCOM_WEBHOOK_SECRET", ""), **options)
 
@@ -156,7 +156,7 @@ class CalcomCalendar(CalendarProvider):
         raise BookingUnconfirmed(f"Cal.com did not confirm the booking ({status}): {message}")
 
     def cancel(self, ref: str, reason: str) -> None:
-        status, data = self._call(
+        status, _ = self._call(
             "POST", f"/v2/bookings/{urllib.parse.quote(ref, safe='')}/cancel", V_BOOK,
             {"cancellationReason": reason[:200]})
         if status == 404 or 200 <= status < 300:

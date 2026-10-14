@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 import yaml
@@ -23,7 +23,7 @@ from nova.spec import load_bundle
 
 from tests.platform.conftest import EXAMPLE_BUNDLE
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)  # 10:00 in Chicago
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)  # 10:00 in Chicago
 
 COMMS = {
     "communications": {

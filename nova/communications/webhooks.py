@@ -176,7 +176,7 @@ def build_server(
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self) -> None:  # noqa: N802 — stdlib naming
+        def do_POST(self) -> None:
             try:
                 length = int(self.headers.get("Content-Length") or 0)
             except ValueError:
@@ -191,7 +191,7 @@ def build_server(
             with lock:
                 self._reply(*handle(gateway, public_url, self.path, dict(self.headers), body))
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             with lock:
                 self._reply(*handle(gateway, public_url, self.path, dict(self.headers), b"",
                                     method="GET"))

@@ -143,7 +143,7 @@ def test_a_corpus_the_agent_was_never_granted_is_not_searched(tool):
 
 def test_scope_cannot_be_widened_through_the_source_argument(tool, deployment):
     """The grant is a SQL predicate, so there is no argument that reaches past it."""
-    home, bundle, audit = deployment
+    home, _bundle, _audit = deployment
     module, _ = tool
 
     # A corpus that genuinely exists in the index, but was never granted to this agent.
@@ -227,7 +227,7 @@ def test_injection_patterns_are_flagged_but_the_document_is_not_dropped(deployme
     """A security handbook explaining prompt injection is a legitimate document."""
     pytest.importorskip("tools.threat_patterns")
 
-    home, bundle, _ = deployment
+    home, _bundle, _ = deployment
     module = load_installed(home, "customer-support")
 
     from nova.knowledge import KnowledgeIndex
@@ -254,7 +254,7 @@ def test_injection_patterns_are_flagged_but_the_document_is_not_dropped(deployme
 
 
 def test_every_search_is_recorded_before_it_runs(tool, deployment):
-    home, _, audit = deployment
+    _home, _, audit = deployment
     module, _ = tool
     module.handle_knowledge_search({"query": "refund approval threshold"})
 
@@ -267,7 +267,7 @@ def test_every_search_is_recorded_before_it_runs(tool, deployment):
 def test_the_record_carries_citations_but_never_the_passage_text(tool, deployment):
     """Where the agent read is the governance question. Copying customer documents into a
     second file with a different retention story is a liability, not an improvement."""
-    home, _, audit = deployment
+    _home, _, audit = deployment
     module, _ = tool
     module.handle_knowledge_search({"query": "refund approval threshold"})
 
@@ -285,7 +285,7 @@ def test_the_record_carries_citations_but_never_the_passage_text(tool, deploymen
 def test_asking_for_an_ungranted_corpus_is_recorded(tool, deployment):
     """Either a stale prompt or something probing for what else exists. Both are worth
     seeing in the log."""
-    home, _, audit = deployment
+    _home, _, audit = deployment
     module, _ = tool
     module.handle_knowledge_search({"query": "salaries", "source": "hr-private"})
 

@@ -223,7 +223,7 @@ class Doc(BaseDocTemplate):
 
 
 
-from content import build_story  # noqa: E402
+from content import build_story
 
 
 def main():

@@ -29,7 +29,7 @@ transition.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 from nova.audit import new_correlation_id
 from nova.communications.contracts import ACTIVE, CallStatus, FailureReason, ProviderError
@@ -65,7 +65,7 @@ class Reconciled:
 
 
 def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def sweep(gateway: CallGateway) -> list[Reconciled]:

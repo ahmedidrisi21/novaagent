@@ -329,7 +329,7 @@ class HermesRuntime(AgentRuntime):
     ) -> dict[str, Any]:
         deployment = deployment or DeploymentSpec()
         resolved = deployment.provider.merged_with(spec.model.deployment)
-        provider_config, warnings = _provider.build_provider_config(resolved)
+        _, warnings = _provider.build_provider_config(resolved)
         required = _provider.required_env(resolved, dict(deployment.runtime_config or {}))
         report = _readiness.check(
             spec.id, required, profile_dir=self.paths.profile_dir(spec.id)

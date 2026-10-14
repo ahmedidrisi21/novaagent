@@ -12,8 +12,8 @@ from nova.runtime.hermes.paths import HermesPaths, resolve_home
 from nova.runtime.hermes.skin import build_skin, skin_filename
 
 __all__ = [
-    "HermesRuntime",
     "HermesPaths",
+    "HermesRuntime",
     "build_skin",
     "resolve_home",
     "skin_filename",

@@ -24,7 +24,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
@@ -67,7 +67,7 @@ def new_correlation_id() -> str:
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -97,7 +97,7 @@ class AuditEvent:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
 
     @classmethod
-    def from_json(cls, line: str) -> "AuditEvent":
+    def from_json(cls, line: str) -> AuditEvent:
         data = json.loads(line)
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
@@ -132,7 +132,7 @@ class AuditLog:
         except OSError as exc:
             raise AuditError(f"cannot create audit log directory {self.path.parent}: {exc}") from exc
 
-    def with_actor(self, actor: str) -> "AuditLog":
+    def with_actor(self, actor: str) -> AuditLog:
         """The same log, written as somebody else.
 
         The control plane needs this and nothing else does. A long-running server is one
@@ -153,7 +153,7 @@ class AuditLog:
         return clone
 
     @classmethod
-    def for_home(cls, home: Path, *, tenant_id: str, actor: str = "nova") -> "AuditLog":
+    def for_home(cls, home: Path, *, tenant_id: str, actor: str = "nova") -> AuditLog:
         """The conventional log location inside a NOVA home directory."""
         return cls(Path(home) / "nova" / _DEFAULT_LOG_NAME, tenant_id=tenant_id, actor=actor)
 

@@ -143,7 +143,7 @@ def _existing_id(kb: Any, connection: Any, key: str, tenant: str = "") -> Option
     if callable(finder):
         try:
             found = finder(connection, key)
-        except Exception:  # noqa: BLE001 — a probe must never fail a submission
+        except Exception:
             return None
         if found is None:
             return None
@@ -157,7 +157,7 @@ def _existing_id(kb: Any, connection: Any, key: str, tenant: str = "") -> Option
             "AND COALESCE(tenant, '') = COALESCE(?, '') LIMIT 1",
             (key, tenant or None),
         ).fetchone()
-    except Exception:  # noqa: BLE001 — schema differences must not fail a submission
+    except Exception:
         return None
     return row[0] if row else None
 

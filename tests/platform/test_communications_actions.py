@@ -6,7 +6,7 @@ import copy
 import json
 import shutil
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 import yaml
@@ -30,7 +30,7 @@ from nova.spec import load_bundle
 from tests.platform.conftest import EXAMPLE_BUNDLE
 from tests.platform.test_communications_extraction import Reader
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)  # 10:00 in Chicago
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)  # 10:00 in Chicago
 PUBLIC = "https://calls.example.test"
 
 SPEC = {"communications": {
@@ -131,7 +131,7 @@ def by_kind(store, call_id):
 
 def test_each_proposal_lands_at_the_tenants_tier_never_the_models(world):
     make, store, _, _ = world
-    gateway, record = make({"summary": "Wants pricing.", "actions": [
+    _gateway, record = make({"summary": "Wants pricing.", "actions": [
         EMAIL, CALLBACK, REFUND,
         action("task", "Send me the pricing", detail="prepare pricing", tier="auto"),
         action("flag", "Yes", detail="not allowed for this purpose"),
@@ -241,7 +241,7 @@ def test_auto_email_is_held_to_one_per_contact_per_day(world):
     make, store, _, rig = world
     auto = {**SPEC["communications"]["actions"]["rules"]["follow_up_email"], "tier": "auto"}
     spec = spec_with(**{"actions.rules.follow_up_email": auto})
-    first, record1 = make({"actions": [EMAIL]}, spec=spec)
+    _first, _record1 = make({"actions": [EMAIL]}, spec=spec)
     second, record2 = make({"actions": [EMAIL]}, spec=spec)
     sweep(second)
     assert len(rig["email"].sent) == 1
@@ -252,7 +252,7 @@ def test_auto_email_is_held_to_one_per_contact_per_day(world):
 def test_a_contact_without_an_email_address_gets_a_draft_not_a_guess(world):
     make, store, _, _ = world
     store.put_contact(Contact("c1", "+13125550101", "America/Chicago", ("customers",)))
-    gateway, record = make({"actions": [EMAIL]})
+    _gateway, record = make({"actions": [EMAIL]})
     (email,) = store.actions(call_id=record.call_id)
     assert email["status"] == "draft" and "no email address" in email["note"]
 
@@ -335,7 +335,7 @@ def test_callbacks_cannot_chain_past_the_limit_on_their_own(world):
 
 
 def test_a_spoken_opt_out_cancels_what_was_about_to_reach_them(world):
-    make, store, _, rig = world
+    make, store, _, _rig = world
     gateway, record = make({"actions": [CALLBACK]})
     gateway.opt_out("c1", reason="asked", source="test")
     (callback,) = store.actions(call_id=record.call_id)

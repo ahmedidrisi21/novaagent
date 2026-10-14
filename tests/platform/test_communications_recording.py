@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import urllib.parse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
@@ -30,7 +30,7 @@ from nova.errors import SpecError
 
 from tests.platform.test_communications_live import Scripted, tts_stand_in, wait_for
 
-START = datetime(2026, 10, 12, 15, 0, tzinfo=timezone.utc)
+START = datetime(2026, 10, 12, 15, 0, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("digits, speech, outcome", [

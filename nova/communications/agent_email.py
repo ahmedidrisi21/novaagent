@@ -44,7 +44,7 @@ def _iso(gateway, delta: timedelta = timedelta(0)) -> str:
 
 
 def digest(to: str, subject: str, body: str) -> str:
-    return "sha256:" + hashlib.sha256(f"{to}\n{subject}\n{body}".encode("utf-8")).hexdigest()
+    return "sha256:" + hashlib.sha256(f"{to}\n{subject}\n{body}".encode()).hexdigest()
 
 
 def decide(gateway, agent: str, contact_id: str, purpose_id: str) -> tuple[str, str]:
@@ -75,7 +75,7 @@ def decide(gateway, agent: str, contact_id: str, purpose_id: str) -> tuple[str, 
     ]
     try:
         reason = next((message for failed, message in checks if failed()), "")
-    except Exception as exc:  # noqa: BLE001 — a gate that raises must still say no
+    except Exception as exc:
         return DENY, f"the email gate failed and refused by default: {exc}"
     if reason:
         return DENY, reason

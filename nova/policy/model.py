@@ -46,7 +46,7 @@ class ActionSpec:
     requires_approval: bool = False
 
     @classmethod
-    def parse(cls, name: str, doc: Doc) -> "ActionSpec":
+    def parse(cls, name: str, doc: Doc) -> ActionSpec:
         spec = cls(
             name=name,
             description=doc.str_("description"),
@@ -81,7 +81,7 @@ class PermissionSpec:
     tools: tuple[str, ...] = ()
 
     @classmethod
-    def parse(cls, name: str, doc: Doc) -> "PermissionSpec":
+    def parse(cls, name: str, doc: Doc) -> PermissionSpec:
         spec = cls(
             name=name,
             description=doc.str_("description"),
@@ -120,7 +120,7 @@ class PolicySpec:
         *,
         source: Optional[Path] = None,
         env: Optional[Mapping[str, str]] = None,
-    ) -> "PolicySpec":
+    ) -> PolicySpec:
         doc = Doc(data, source=source, env=env)
 
         actions: dict[str, ActionSpec] = {}

@@ -105,7 +105,7 @@ def test_a_human_can_reject_a_review_nobody_has_claimed(board):
     """
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
 
-    _, runtime, _, report = board
+    _, _runtime, _, report = board
     task_id = report.result.items[0].task_id
     with kbc.connect_closing() as connection:
         assert kb.request_review(connection, task_id, summary="done", force=True)

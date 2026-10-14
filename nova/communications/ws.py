@@ -27,10 +27,10 @@ class _Channel(MediaChannel):
     def __init__(self, connection) -> None:
         self._connection = connection
 
-    def send(self, message: Union[str, bytes]) -> None:
+    def send(self, message: str | bytes) -> None:
         self._connection.send(message)
 
-    def recv(self, timeout: Optional[float] = None) -> Union[str, bytes]:
+    def recv(self, timeout: Optional[float] = None) -> str | bytes:
         from websockets.exceptions import ConnectionClosed
 
         try:

@@ -34,7 +34,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Optional
 
@@ -141,7 +141,7 @@ class Seal:
         }
 
     @classmethod
-    def from_dict(cls, data: Any) -> "Seal":
+    def from_dict(cls, data: Any) -> Seal:
         if not isinstance(data, dict):
             raise ValueError("a seal must be a JSON object")
         return cls(
@@ -182,7 +182,7 @@ def seal(path: Path, *, tenant_id: str = "") -> Seal:
     return Seal(
         version=SEAL_VERSION,
         tenant_id=tenant_id,
-        sealed_at=datetime.now(timezone.utc)
+        sealed_at=datetime.now(UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
         segments=tuple(

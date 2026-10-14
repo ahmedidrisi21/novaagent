@@ -26,7 +26,7 @@ def test_commit_carries_what_actually_happened(audit):
     cid = new_correlation_id()
     with audit.model_visible_change("agent.materialized", correlation_id=cid, subject="a") as out:
         out["paths"] = ["config.yaml"]
-    committed = [e for e in audit.read() if e.phase == "committed"][0]
+    committed = next(e for e in audit.read() if e.phase == "committed")
     assert committed.detail["paths"] == ["config.yaml"]
 
 

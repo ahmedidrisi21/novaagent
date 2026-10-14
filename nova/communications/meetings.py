@@ -24,7 +24,7 @@ applied once; a contact who opts out has their upcoming meetings cancelled.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -73,11 +73,11 @@ def normalize_start(text: str, zone: str) -> str:
             moment = moment.replace(tzinfo=ZoneInfo(zone))
         except (ZoneInfoNotFoundError, ValueError, KeyError) as exc:
             raise ValueError("start has no offset and the contact has no known time zone") from exc
-    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _parse(start: str) -> datetime:
-    return datetime.fromisoformat(start.replace("Z", "+00:00"))
+    return datetime.fromisoformat(start)
 
 
 def decide(gateway, agent: str, contact_id: str, purpose_id: str, event_type_id: str,
@@ -120,7 +120,7 @@ def decide(gateway, agent: str, contact_id: str, purpose_id: str, event_type_id:
     ]
     try:
         reason = next((message for failed, message in checks if failed()), "")
-    except Exception as exc:  # noqa: BLE001 — a gate that raises must still say no
+    except Exception as exc:
         return DENY, f"the meeting gate failed and refused by default: {exc}"
     if reason:
         return DENY, reason

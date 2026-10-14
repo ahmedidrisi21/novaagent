@@ -57,7 +57,7 @@ class Origin:
     endpoint_url: str = ""
 
     @classmethod
-    def parse(cls, doc) -> Optional["Origin"]:
+    def parse(cls, doc) -> Optional[Origin]:
         if doc is None:
             return None
         kind = doc.choice("type", KINDS, default="s3")
@@ -227,7 +227,7 @@ def sync(source, *, dry_run: bool = False) -> SyncReport:
                 report.downloaded += 1
     except SpecError:
         raise
-    except Exception as exc:  # noqa: BLE001 — every boto3 failure mode is a report, not a crash
+    except Exception as exc:
         report.error = f"{type(exc).__name__}: {exc}"
         return report
 

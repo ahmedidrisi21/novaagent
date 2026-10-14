@@ -23,7 +23,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, UTC
 from typing import TYPE_CHECKING, Callable, Mapping, Optional
 
 from nova.audit import AuditLog, new_correlation_id
@@ -69,7 +69,7 @@ ENGINE_WINDOW = timedelta(minutes=10)
 
 
 def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -116,7 +116,7 @@ class CallGateway:
         tasks: Optional[Callable[[WorkItem], str]] = None,
         link_secret: bytes = b"",
         public_url: str = "",
-        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if audit.tenant_id != store.tenant_id:
             raise ValueError("the audit log and the store belong to different tenants")
@@ -151,14 +151,14 @@ class CallGateway:
         address can claim any call id. Only someone holding the gateway's secret can
         produce the token that goes with it.
         """
-        message = f"{self.store.tenant_id}:{call_id}".encode("utf-8")
+        message = f"{self.store.tenant_id}:{call_id}".encode()
         return hmac.new(self._secret, message, hashlib.sha256).hexdigest()[:32]
 
     # -- requests -----------------------------------------------------------------------
 
     def _facts(self, agent: str, contact_id: str, purpose: str) -> CallFacts:
         now = self._clock()
-        midnight = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        midnight = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         return CallFacts(
             agent=agent,
             purpose=purpose,

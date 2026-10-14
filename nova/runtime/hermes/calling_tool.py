@@ -49,14 +49,14 @@ SLOTS_TOOL = "meeting_slots"
 MEETING_STATUS_TOOL = "meeting_status"
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
-_CACHE: Dict[str, Any] = {}
+_CACHE: dict[str, Any] = {}
 
 
 def _config_path() -> Path:
     return Path(__file__).resolve().parents[2] / CONFIG_FILENAME
 
 
-def _load_config() -> Optional[Dict[str, Any]]:
+def _load_config() -> Optional[dict[str, Any]]:
     if "config" in _CACHE:
         return _CACHE["config"]
     config = None
@@ -75,14 +75,14 @@ def _load_config() -> Optional[Dict[str, Any]]:
     return config
 
 
-def _sign(key: str, payload: Dict[str, Any]) -> str:
+def _sign(key: str, payload: dict[str, Any]) -> str:
     """Must match ``nova.communications.inbox.sign`` byte for byte; a test holds them together."""
     body = json.dumps({k: payload[k] for k in sorted(payload) if k != "signature"},
                       sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hmac.new(key.encode("ascii"), body, hashlib.sha256).hexdigest()
 
 
-def _purpose_ids(config: Dict[str, Any]) -> list:
+def _purpose_ids(config: dict[str, Any]) -> list:
     return [str(p.get("id")) for p in config.get("purposes", []) if isinstance(p, dict) and p.get("id")]
 
 
@@ -90,7 +90,7 @@ def _reply(**fields: Any) -> str:
     return json.dumps(fields, sort_keys=True)
 
 
-def handle_request_call(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_request_call(args: dict[str, Any], **_kwargs: Any) -> str:
     """Queue one call request. Never raises into the agent loop."""
     config = _load_config()
     if not config:
@@ -118,7 +118,7 @@ def handle_request_call(args: Dict[str, Any], **_kwargs: Any) -> str:
     )
 
 
-def _spool(config: Dict[str, Any], spool: str, fields: Dict[str, Any]) -> tuple:
+def _spool(config: dict[str, Any], spool: str, fields: dict[str, Any]) -> tuple:
     """Sign and file one request. ``(request_id, None)``, or ``(None, reply)`` on failure."""
     request_id = uuid.uuid4().hex
     payload = {"agent": str(config["agent_id"]), "request_id": request_id,
@@ -135,7 +135,7 @@ def _spool(config: Dict[str, Any], spool: str, fields: Dict[str, Any]) -> tuple:
     return request_id, None
 
 
-def _read_result(config: Dict[str, Any], request_id: str) -> str:
+def _read_result(config: dict[str, Any], request_id: str) -> str:
     path = Path(str(config["inbox"])) / "results" / str(config["agent_id"]) / f"{request_id}.json"
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
@@ -147,7 +147,7 @@ def _read_result(config: Dict[str, Any], request_id: str) -> str:
     return json.dumps(result, sort_keys=True)
 
 
-def handle_call_status(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_call_status(args: dict[str, Any], **_kwargs: Any) -> str:
     config = _load_config()
     if not config:
         return _reply(status="unavailable", message="Calling is not configured for this agent.")
@@ -157,12 +157,12 @@ def handle_call_status(args: Dict[str, Any], **_kwargs: Any) -> str:
     return _read_result(config, request_id)
 
 
-def _delegation(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _delegation(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     grant = (config or {}).get("delegation")
     return grant if isinstance(grant, dict) else {}
 
 
-def handle_delegate_work(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_delegate_work(args: dict[str, Any], **_kwargs: Any) -> str:
     """Hand work to another agent. Never raises into the agent loop."""
     config = _load_config()
     targets = [str(t) for t in _delegation(config).get("may_delegate_to") or []]
@@ -193,7 +193,7 @@ def handle_delegate_work(args: Dict[str, Any], **_kwargs: Any) -> str:
                            "completed."))
 
 
-def handle_delegation_status(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_delegation_status(args: dict[str, Any], **_kwargs: Any) -> str:
     config = _load_config()
     if not _delegation(config).get("may_delegate_to"):
         return _reply(status="unavailable", message="This agent may not delegate work.")
@@ -203,7 +203,7 @@ def handle_delegation_status(args: Dict[str, Any], **_kwargs: Any) -> str:
     return _read_result(config, delegation_id)
 
 
-def handle_report_delegation(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_report_delegation(args: dict[str, Any], **_kwargs: Any) -> str:
     config = _load_config()
     if not _delegation(config).get("receives"):
         return _reply(status="unavailable", message="No work is delegated to this agent.")
@@ -227,7 +227,7 @@ def handle_report_delegation(args: Dict[str, Any], **_kwargs: Any) -> str:
                           "result has every field asked for.")
 
 
-def _schemas(config: Dict[str, Any]) -> tuple:
+def _schemas(config: dict[str, Any]) -> tuple:
     purposes = "\n".join(
         f"  - {p.get('id')}: {p.get('description') or ''}".rstrip(": ")
         for p in config.get("purposes", []) if isinstance(p, dict)
@@ -263,14 +263,14 @@ def _schemas(config: Dict[str, Any]) -> tuple:
     return request, status
 
 
-def _email_purposes(config: Optional[Dict[str, Any]]) -> list:
+def _email_purposes(config: Optional[dict[str, Any]]) -> list:
     grant = (config or {}).get("email")
     if not isinstance(grant, dict):
         return []
     return [str(p.get("id")) for p in grant.get("purposes", []) if isinstance(p, dict) and p.get("id")]
 
 
-def handle_send_email(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_send_email(args: dict[str, Any], **_kwargs: Any) -> str:
     """Ask for an email to a contact. Never raises into the agent loop."""
     config = _load_config()
     purposes = _email_purposes(config)
@@ -297,7 +297,7 @@ def handle_send_email(args: Dict[str, Any], **_kwargs: Any) -> str:
                            "Check with email_status; do not say it was sent until it says so."))
 
 
-def handle_email_status(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_email_status(args: dict[str, Any], **_kwargs: Any) -> str:
     config = _load_config()
     if not _email_purposes(config):
         return _reply(status="unavailable", message="This agent may not send email.")
@@ -307,7 +307,7 @@ def handle_email_status(args: Dict[str, Any], **_kwargs: Any) -> str:
     return _read_result(config, request_id)
 
 
-def _email_schemas(config: Dict[str, Any]) -> tuple:
+def _email_schemas(config: dict[str, Any]) -> tuple:
     send = {
         "name": EMAIL_TOOL,
         "description": (
@@ -336,17 +336,17 @@ def _email_schemas(config: Dict[str, Any]) -> tuple:
     return send, status
 
 
-def _meeting_grant(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _meeting_grant(config: Optional[dict[str, Any]]) -> dict[str, Any]:
     grant = (config or {}).get("meetings")
     return grant if isinstance(grant, dict) else {}
 
 
-def _meeting_types(grant: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+def _meeting_types(grant: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(e["id"]): e for e in grant.get("event_types", [])
             if isinstance(e, dict) and e.get("id")}
 
 
-def handle_book_meeting(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_book_meeting(args: dict[str, Any], **_kwargs: Any) -> str:
     """Ask for a meeting with a contact. Never raises into the agent loop."""
     config = _load_config()
     grant = _meeting_grant(config)
@@ -377,7 +377,7 @@ def handle_book_meeting(args: Dict[str, Any], **_kwargs: Any) -> str:
                            "the time is taken, the status lists open times to try."))
 
 
-def handle_meeting_slots(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_meeting_slots(args: dict[str, Any], **_kwargs: Any) -> str:
     config = _load_config()
     types = _meeting_types(_meeting_grant(config))
     if not types:
@@ -399,7 +399,7 @@ def handle_meeting_slots(args: Dict[str, Any], **_kwargs: Any) -> str:
                   message="Asked. Read the open times with meeting_status and this request_id.")
 
 
-def handle_meeting_status(args: Dict[str, Any], **_kwargs: Any) -> str:
+def handle_meeting_status(args: dict[str, Any], **_kwargs: Any) -> str:
     config = _load_config()
     if not _meeting_types(_meeting_grant(config)):
         return _reply(status="unavailable", message="This agent may not book meetings.")
@@ -410,7 +410,7 @@ def handle_meeting_status(args: Dict[str, Any], **_kwargs: Any) -> str:
     return _read_result(config, request_id)
 
 
-def _meeting_schemas(grant: Dict[str, Any]) -> tuple:
+def _meeting_schemas(grant: dict[str, Any]) -> tuple:
     types = _meeting_types(grant)
     kinds = "; ".join(f"{e['id']}: {e.get('title', '')} ({e.get('duration_minutes', '?')} min)"
                       for e in types.values())
@@ -460,7 +460,7 @@ def _meeting_schemas(grant: Dict[str, Any]) -> tuple:
     return book, slots, status
 
 
-def _delegation_schemas(grant: Dict[str, Any]) -> tuple:
+def _delegation_schemas(grant: dict[str, Any]) -> tuple:
     targets = [str(t) for t in grant.get("may_delegate_to") or []]
     delegate = {
         "name": DELEGATE_TOOL,

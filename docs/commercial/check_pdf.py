@@ -43,13 +43,12 @@ def main(render=True):
     print(f"pages: {doc.page_count}")
 
     for i, page in enumerate(doc, start=1):
-        rect = page.rect
         blocks = page.get_text("blocks")
         # Header and footer live outside the frame by design; ignore them.
         body = [b for b in blocks if b[1] > 16 * MM and b[3] < (297 - 13) * MM]
 
         for b in body:
-            x0, y0, x1, y1, text = b[0], b[1], b[2], b[3], b[4]
+            x0, x1, y1, text = b[0], b[2], b[3], b[4]
             if x1 > RIGHT + 2:
                 problems.append((i, "overflows right margin",
                                  f"x1={x1:.1f} > {RIGHT:.1f}: {text[:60]!r}"))

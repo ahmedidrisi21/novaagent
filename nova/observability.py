@@ -174,7 +174,7 @@ class operation:
         self.fields = fields
         self._started = 0.0
 
-    def __enter__(self) -> "operation":
+    def __enter__(self) -> operation:
         self._started = time.monotonic()
         get(self.name).info("%s started", self.name, extra={_FIELDS: dict(self.fields)})
         return self
