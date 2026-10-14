@@ -50,6 +50,7 @@ from nova.communications.gate import (
     CallFacts,
     decide_call,
 )
+from nova.communications.booking import CalendarProvider
 from nova.communications.mail import EmailProvider
 from nova.communications.recording import guard_for
 from nova.communications.spec import CommunicationsSpec
@@ -111,6 +112,7 @@ class CallGateway:
         answers: Optional[Callable[[CallRecord], Optional[Answerer]]] = None,
         extractor=None,
         email: Optional[EmailProvider] = None,
+        calendar: Optional[CalendarProvider] = None,
         tasks: Optional[Callable[[WorkItem], str]] = None,
         link_secret: bytes = b"",
         public_url: str = "",
@@ -133,6 +135,8 @@ class CallGateway:
         self.extractor = extractor
         #: Sends the follow-up emails calls earn. None: email actions wait.
         self.email = email
+        #: Books the meetings agents ask for. None: meeting requests fail, saying so.
+        self.calendar = calendar
         #: Puts work on the runtime's board, returning its task id. None: work actions wait.
         self.tasks = tasks
         #: Signs the unsubscribe link in every email.

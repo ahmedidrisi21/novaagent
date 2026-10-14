@@ -43,6 +43,10 @@ REPORT_STATUSES = ("completed", "needs_approval", "blocked", "failed")
 EMAIL_TOOLSET = "nova_email"
 EMAIL_TOOL = "send_email"
 EMAIL_STATUS_TOOL = "email_status"
+MEETING_TOOLSET = "nova_meetings"
+MEETING_TOOL = "book_meeting"
+SLOTS_TOOL = "meeting_slots"
+MEETING_STATUS_TOOL = "meeting_status"
 
 _ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
 _CACHE: Dict[str, Any] = {}
@@ -62,7 +66,8 @@ def _load_config() -> Optional[Dict[str, Any]]:
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict) and loaded.get("key") and (
                     loaded.get("purposes") or isinstance(loaded.get("delegation"), dict)
-                    or isinstance(loaded.get("email"), dict)):
+                    or isinstance(loaded.get("email"), dict)
+                    or isinstance(loaded.get("meetings"), dict)):
                 config = loaded
     except (OSError, ValueError):
         config = None
@@ -331,6 +336,130 @@ def _email_schemas(config: Dict[str, Any]) -> tuple:
     return send, status
 
 
+def _meeting_grant(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    grant = (config or {}).get("meetings")
+    return grant if isinstance(grant, dict) else {}
+
+
+def _meeting_types(grant: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    return {str(e["id"]): e for e in grant.get("event_types", [])
+            if isinstance(e, dict) and e.get("id")}
+
+
+def handle_book_meeting(args: Dict[str, Any], **_kwargs: Any) -> str:
+    """Ask for a meeting with a contact. Never raises into the agent loop."""
+    config = _load_config()
+    grant = _meeting_grant(config)
+    types = _meeting_types(grant)
+    if not types:
+        return _reply(status="unavailable", message="This agent may not book meetings.")
+    contact_id = str(args.get("contact_id") or "").strip()
+    purpose = str(args.get("purpose") or "").strip()
+    event_type = str(args.get("event_type") or "").strip()
+    start = str(args.get("start") or "").strip()
+    purposes = [str(p.get("id")) for p in grant.get("purposes", []) if isinstance(p, dict)]
+    if not contact_id or len(contact_id) > 128:
+        return _reply(status="refused", message="contact_id is required: the CRM id of the contact.")
+    if purpose not in purposes:
+        return _reply(status="refused", message=f"purpose must be one of: {', '.join(purposes)}")
+    if event_type not in types:
+        return _reply(status="refused", message=f"event_type must be one of: {', '.join(types)}")
+    if not start or len(start) > 40:
+        return _reply(status="refused", message="start is required, e.g. 2026-10-13T10:30:00-05:00.")
+    request_id, problem = _spool(config, "meetings", {
+        "contact_id": contact_id, "purpose": purpose, "event_type": event_type, "start": start})
+    if problem:
+        return problem
+    return _reply(status="queued", request_id=request_id,
+                  message=("Requested. The gateway books it at the calendar only if the contact "
+                           "may be invited, and a person may need to approve it first. Check "
+                           "with meeting_status; do not say it is booked until it says so. If "
+                           "the time is taken, the status lists open times to try."))
+
+
+def handle_meeting_slots(args: Dict[str, Any], **_kwargs: Any) -> str:
+    config = _load_config()
+    types = _meeting_types(_meeting_grant(config))
+    if not types:
+        return _reply(status="unavailable", message="This agent may not book meetings.")
+    contact_id = str(args.get("contact_id") or "").strip()
+    event_type = str(args.get("event_type") or "").strip()
+    day = str(args.get("day") or "").strip()
+    if not contact_id or len(contact_id) > 128:
+        return _reply(status="refused", message="contact_id is required: the CRM id of the contact.")
+    if event_type not in types:
+        return _reply(status="refused", message=f"event_type must be one of: {', '.join(types)}")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        return _reply(status="refused", message="day must be YYYY-MM-DD, in the contact's day.")
+    request_id, problem = _spool(config, "slots", {
+        "contact_id": contact_id, "event_type": event_type, "day": day})
+    if problem:
+        return problem
+    return _reply(status="queued", request_id=request_id,
+                  message="Asked. Read the open times with meeting_status and this request_id.")
+
+
+def handle_meeting_status(args: Dict[str, Any], **_kwargs: Any) -> str:
+    config = _load_config()
+    if not _meeting_types(_meeting_grant(config)):
+        return _reply(status="unavailable", message="This agent may not book meetings.")
+    request_id = str(args.get("request_id") or "").strip()
+    if not _ID.match(request_id):
+        return _reply(status="refused",
+                      message="request_id is the id book_meeting or meeting_slots returned.")
+    return _read_result(config, request_id)
+
+
+def _meeting_schemas(grant: Dict[str, Any]) -> tuple:
+    types = _meeting_types(grant)
+    kinds = "; ".join(f"{e['id']}: {e.get('title', '')} ({e.get('duration_minutes', '?')} min)"
+                      for e in types.values())
+    purposes = [str(p.get("id")) for p in grant.get("purposes", []) if isinstance(p, dict)]
+    book = {
+        "name": MEETING_TOOL,
+        "description": (
+            "Ask for a meeting with a contact, for one of your approved purposes. Name the "
+            "contact by its CRM id; the invitation goes to the address on file, never to one you "
+            "supply. The gateway checks opt-outs, consent, notice and limits, and a person may "
+            f"approve it first. Event types: {kinds}."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contact_id": {"type": "string", "description": "The contact's CRM id."},
+                "purpose": {"type": "string", "enum": purposes},
+                "event_type": {"type": "string", "enum": list(types)},
+                "start": {"type": "string", "description": (
+                    "ISO 8601, e.g. 2026-10-13T10:30:00-05:00. Without an offset it is read in "
+                    "the contact's time zone.")},
+            },
+            "required": ["contact_id", "purpose", "event_type", "start"],
+        },
+    }
+    slots = {
+        "name": SLOTS_TOOL,
+        "description": "Ask which times are open on one day for an event type. Read the answer "
+                       "with meeting_status.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contact_id": {"type": "string"},
+                "event_type": {"type": "string", "enum": list(types)},
+                "day": {"type": "string", "description": "YYYY-MM-DD, the contact's day."},
+            },
+            "required": ["contact_id", "event_type", "day"],
+        },
+    }
+    status = {
+        "name": MEETING_STATUS_TOOL,
+        "description": "Where a meeting you asked for stands (waiting for approval, booked, "
+                       "blocked with the reason, rejected, failed with open times, cancelled), "
+                       "or the open times meeting_slots asked for.",
+        "parameters": {"type": "object", "properties": {"request_id": {"type": "string"}},
+                       "required": ["request_id"]},
+    }
+    return book, slots, status
+
+
 def _delegation_schemas(grant: Dict[str, Any]) -> tuple:
     targets = [str(t) for t in grant.get("may_delegate_to") or []]
     delegate = {
@@ -404,6 +533,19 @@ def register(ctx: Any) -> None:
         ctx.register_tool(name=EMAIL_STATUS_TOOL, toolset=EMAIL_TOOLSET, schema=status,
                           handler=handle_email_status,
                           description="See where a requested email stands.", emoji="✉️")
+    meeting_grant = _meeting_grant(config)
+    if _meeting_types(meeting_grant):
+        book, slots, meeting_status = _meeting_schemas(meeting_grant)
+        ctx.register_tool(name=MEETING_TOOL, toolset=MEETING_TOOLSET, schema=book,
+                          handler=handle_book_meeting,
+                          description="Ask for a meeting with a contact; the gateway decides.",
+                          emoji="📅")
+        ctx.register_tool(name=SLOTS_TOOL, toolset=MEETING_TOOLSET, schema=slots,
+                          handler=handle_meeting_slots,
+                          description="Ask which times are open for a meeting.", emoji="📅")
+        ctx.register_tool(name=MEETING_STATUS_TOOL, toolset=MEETING_TOOLSET, schema=meeting_status,
+                          handler=handle_meeting_status,
+                          description="See where a requested meeting stands.", emoji="📅")
     grant = _delegation(config)
     if not grant:
         return
