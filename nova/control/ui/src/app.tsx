@@ -1,3 +1,4 @@
+import { CommunicationsScreen } from "@/screens/communications";
 import * as React from "react";
 import {
   Activity, Blocks, BookOpen, Boxes, CircleCheck, Gauge, LayoutDashboard,
@@ -40,6 +41,7 @@ const SCREEN_META: Record<string, { title: string; subtitle: string }> = {
   knowledge: { title: "Knowledge", subtitle: "The documents the workforce may quote, and who may read each." },
   channels: { title: "Channels", subtitle: "The places customers already talk, wired to the workforce." },
   policies: { title: "Policies", subtitle: "What each agent is permitted to do, and what is actually enforced." },
+  communications: { title: "Communications", subtitle: "Calls and emails your agents place, and what is waiting on a person." },
   usage: { title: "Usage", subtitle: "Model usage as reported by the runtime. Observed, never enforced." },
 };
 
@@ -356,6 +358,7 @@ export default function App() {
             : route === "knowledge" ? <KnowledgeScreen knowledge={knowledge} onChanged={() => setKnowledgeNonce((n) => n + 1)} />
             : route === "channels" ? <ChannelsScreen channels={channels} />
             : route === "policies" ? <PoliciesScreen policy={policy} />
+            : route === "communications" ? <CommunicationsScreen />
             : route === "usage" ? <UsageScreen budget={budget} />
             : <ObjectivesScreen objectives={objectives} />}
           </main>

@@ -271,7 +271,7 @@ store still thinks is ringing, holding one of its agent's concurrency slots. The
 | `POST /platform/v1/communications/calls/<id>/decide` `{action: approve\|reject\|end}` | admin | audited under the person; an approval re-runs the gate and answers 409 when the call is no longer callable |
 
 Admin throughout: a call list names customers, and approving dials a real person. The
-dashboard's source is not in this repository, so the screen for these routes is not here.
+Control Center screen for these routes is described under Phase 9.
 
 ## Recording with consent
 
@@ -927,5 +927,22 @@ carry it), rescheduling by an agent, recurring meetings, and reminders (Cal.com 
 4. **Later:** a post-call action that books a meeting, and ringless voicemail (with its own
    legal review).
 
-A dashboard screen for the call monitor and the action plans needs the dashboard's source,
-which is not here.
+## Phase 9: the Control Center screen
+
+The dashboard source is `nova/control/ui` (the built bundle is `nova/control/static`), so
+the screen lives here. **Communications** (admin) has five tabs, all reading the routes
+above and nothing else:
+
+- **Calls**: the call list with a detail row (carrier, recording consent, recording
+  state, follow-up plan, emails). A call waiting for approval shows Approve and Reject; a
+  live call shows End.
+- **Approvals**: follow-up plans (approved against the digest shown, so a plan that moved
+  on answers 409), field reviews, and emails agents wrote, with the full text an approver
+  is approving.
+- **History**: the one timeline, with each finished call's cost.
+- **Spend**: month to date against the limit, committed spend on live calls, providers
+  with no rate (their cost is not counted), and the 7-day digest.
+- **Delegations**: agent-to-agent handovers and their outcome.
+
+A refusal from the server (stale digest, opted-out contact, closed gate) is shown as the
+server's own message. Meeting requests have no tab yet: their routes ship with Phase 8.
