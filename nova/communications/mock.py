@@ -13,6 +13,15 @@ import hmac
 import json
 from typing import Any, Mapping, Optional
 
+from nova.communications.booking import (
+    Booked,
+    BookingChange,
+    BookingEvent,
+    BookingRequest,
+    BookingUnconfirmed,
+    CalendarProvider,
+    SlotUnavailable,
+)
 from nova.communications.contracts import (
     AnswerPlan,
     Billing,
@@ -299,4 +308,68 @@ class MockEmail(EmailProvider):
     def event(self, ref: str, status: EmailStatus, *, event_id: str) -> tuple[dict, bytes]:
         """A signed delivery webhook, as the provider would send it."""
         body = json.dumps({"event_id": event_id, "ref": ref, "status": status.value}).encode()
+        return {SIGNATURE_HEADER: _sign(self._secret, body)}, body
+
+
+class MockCalendar(CalendarProvider):
+    """A calendar that holds a list of open times and books against it, one booking per
+    request id, so a contract test can crash it between booking and answering."""
+
+    id = "mock-calendar"
+
+    def __init__(self, secret: str = "mock-calendar-secret", *, open_times: Optional[list] = None):
+        self._secret = secret.encode("utf-8")
+        self.open_times = list(open_times if open_times is not None else [])
+        #: request id -> (booking ref, BookingRequest)
+        self.bookings: dict[str, tuple[str, BookingRequest]] = {}
+        self.cancelled: list[str] = []
+        self.book_calls = 0
+        #: "unconfirmed": book, then fail to say so. "refuse": a definite refusal.
+        self.fail_next = ""
+        self.find_fails = False
+
+    def slots(self, event_type_ref: str, *, start: str, end: str, time_zone: str,
+              duration_minutes: int) -> list[str]:
+        taken = {b.start for _, b in self.bookings.values()}
+        return [s for s in self.open_times if start <= s <= end and s not in taken]
+
+    def find(self, request: BookingRequest) -> Optional[Booked]:
+        if self.find_fails:
+            raise ProviderError("mock calendar could not search")
+        found = self.bookings.get(request.request_id)
+        return Booked(found[0]) if found and found[0] not in self.cancelled else None
+
+    def book(self, request: BookingRequest) -> Booked:
+        self.book_calls += 1
+        if self.fail_next == "refuse":
+            self.fail_next = ""
+            raise ProviderError("mock calendar refused")
+        if request.start not in self.open_times or any(
+                b.start == request.start for _, b in self.bookings.values()):
+            raise SlotUnavailable("mock calendar: that time is taken")
+        ref = f"mock-booking-{len(self.bookings) + 1}"
+        self.bookings[request.request_id] = (ref, request)
+        if self.fail_next == "unconfirmed":
+            self.fail_next = ""
+            raise BookingUnconfirmed("mock calendar did not answer")
+        return Booked(ref)
+
+    def cancel(self, ref: str, reason: str) -> None:
+        self.cancelled.append(ref)
+
+    def verify(self, headers: Mapping[str, str], body: bytes) -> bool:
+        return _signed(self._secret, headers, body)
+
+    def parse(self, headers: Mapping[str, str], body: bytes) -> list[BookingEvent]:
+        data = json.loads(body.decode("utf-8"))
+        return [BookingEvent(
+            provider_event_id=str(data["event_id"]), booking_ref=str(data["ref"]),
+            change=BookingChange(data["change"]), start=str(data.get("start", "")),
+            previous_ref=str(data.get("previous_ref", "")))]
+
+    def event(self, ref: str, change: BookingChange, *, event_id: str, start: str = "",
+              previous_ref: str = "") -> tuple[dict, bytes]:
+        """A signed calendar webhook, as the provider would send it."""
+        body = json.dumps({"event_id": event_id, "ref": ref, "change": change.value,
+                           "start": start, "previous_ref": previous_ref}).encode()
         return {SIGNATURE_HEADER: _sign(self._secret, body)}, body

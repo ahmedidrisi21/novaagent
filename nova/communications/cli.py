@@ -125,6 +125,16 @@ def register(sub) -> None:
     decide_email.add_argument("--reason", default="")
     decide_email.add_argument("--actor", default="")
 
+    meetings = command("meetings", "meetings agents asked to book, waiting for a person by default")
+    meetings.add_argument("--status", default="awaiting_approval")
+    meetings.add_argument("--json", action="store_true")
+
+    decide_meeting = command("decide-meeting", "approve (and book), reject or cancel a meeting")
+    decide_meeting.add_argument("request_id")
+    decide_meeting.add_argument("decision", choices=["approve", "reject", "cancel"])
+    decide_meeting.add_argument("--reason", default="")
+    decide_meeting.add_argument("--actor", default="")
+
     insights = command("insights", "a digest of what calls achieved and cost (counts only)")
     insights.add_argument("--days", type=int, default=7, help="the last N days (default 7)")
     insights.add_argument("--json", action="store_true")
@@ -435,6 +445,36 @@ def _decide_email(args, bundle, gateway, public_url) -> int:
     return 0
 
 
+def _meetings(args, bundle, gateway, public_url) -> int:
+    rows = gateway.store.meeting_requests(status=args.status)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for row in rows:
+        print(f"  {row['request_id']}  {row['status']:18} {row['agent']:18} -> {row['contact_id']} "
+              f"<{row['to_addr']}>  [{row['purpose']}]")
+        print(f"      {row['event_type']}  {row['start']}  ({row['duration_minutes']} min)")
+        if row["reason"]:
+            print(f"      {row['reason']}")
+    if not rows:
+        print("no meetings in that state")
+    return 0
+
+
+def _decide_meeting(args, bundle, gateway, public_url) -> int:
+    from nova.communications.meetings import approve, cancel, reject
+
+    if args.decision == "approve":
+        result = approve(gateway, args.request_id, actor=_actor(args))
+    elif args.decision == "cancel":
+        result = cancel(gateway, args.request_id, actor=_actor(args), reason=args.reason)
+    else:
+        result = reject(gateway, args.request_id, actor=_actor(args), reason=args.reason)
+    print(f"{args.request_id}: {result['status']}" + (f" ({result['reason']})" if result["reason"]
+                                                       else ""))
+    return 0
+
+
 def _insights(args, bundle, gateway, public_url) -> int:
     from nova.communications.insights import digest, render
 
@@ -587,4 +627,6 @@ _COMMANDS = {
     "insights": _insights,
     "emails": _emails,
     "decide-email": _decide_email,
+    "meetings": _meetings,
+    "decide-meeting": _decide_meeting,
 }

@@ -93,6 +93,8 @@ a Telnyx Call Control carrier driven by command (`telnyx.py`; Ed25519 webhooks t
 bridge (`elevenlabs.py`), a counts-only weekly digest (`insights.py`), email agents
 write themselves behind the email gate (`agent_email.py`) and replies matched by a
 signed reply address and handed back as untrusted text (`replies.py`),
+meetings agents book at a calendar provider behind the same kind of gate, found before
+booked because Cal.com has no idempotency key (`meetings.py`, `calcom.py`),
 and the internet-facing webhook listener and media bridge (never the Control API). Read
 `docs/platform/COMMUNICATIONS.md` before adding an adapter — every carrier must pass
 `test_carrier_contract`, and signatures are tested against the vendor's own vectors.

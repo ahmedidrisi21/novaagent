@@ -24,6 +24,7 @@ class Kind(str, Enum):
     VOICE = "voice"
     TELEPHONY = "telephony"
     EMAIL = "email"
+    CALENDAR = "calendar"
 
 
 #: The questions asked of every voice engine. A routing decision may only rely on a
@@ -63,10 +64,21 @@ EMAIL_CAPABILITIES: tuple[str, ...] = (
     "signed_webhooks",
 )
 
+#: The questions asked of every calendar provider.
+CALENDAR_CAPABILITIES: tuple[str, ...] = (
+    "availability",
+    # A booking retried with the same key books once. Without it the adapter must look for
+    # an existing booking before it books, which every adapter does regardless.
+    "idempotent_booking",
+    "cancel",
+    "signed_webhooks",
+)
+
 CAPABILITY_NAMES: Mapping[Kind, tuple[str, ...]] = {
     Kind.VOICE: VOICE_CAPABILITIES,
     Kind.TELEPHONY: TELEPHONY_CAPABILITIES,
     Kind.EMAIL: EMAIL_CAPABILITIES,
+    Kind.CALENDAR: CALENDAR_CAPABILITIES,
 }
 
 
@@ -257,6 +269,26 @@ PROVIDERS: tuple[CommsProvider, ...] = (
         implementation="nova/communications/resend.py",
         caveat="Exercised against a scripted stand-in only; no live email has been sent.",
     ),
+    # -- calendars -----------------------------------------------------------------------
+    CommsProvider(
+        id="calcom",
+        kind=Kind.CALENDAR,
+        label="Cal.com",
+        capabilities={
+            "availability": _tested(True),
+            "idempotent_booking": _tested(False),
+            "cancel": _tested(True),
+            "signed_webhooks": _tested(True),
+        },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/calcom.py",
+        caveat=(
+            "Exercised against a scripted stand-in only; no live booking has been made. Cal.com "
+            "documents no idempotency key, so a booking is looked up by metadata before it is "
+            "made. The webhook signature (hex HMAC-SHA256 of the body) and the error for a "
+            "taken slot are not verified against a live account."
+        ),
+    ),
     # -- test doubles --------------------------------------------------------------------
     CommsProvider(
         id="mock-voice",
@@ -286,6 +318,15 @@ PROVIDERS: tuple[CommsProvider, ...] = (
             "recording": _tested(True),
             "signed_webhooks": _tested(True),
         },
+        verification=Verification.LOCAL_VALIDATED,
+        implementation="nova/communications/mock.py",
+        test_only=True,
+    ),
+    CommsProvider(
+        id="mock-calendar",
+        kind=Kind.CALENDAR,
+        label="Test calendar (books nothing)",
+        capabilities={name: _tested(True) for name in CALENDAR_CAPABILITIES},
         verification=Verification.LOCAL_VALIDATED,
         implementation="nova/communications/mock.py",
         test_only=True,
